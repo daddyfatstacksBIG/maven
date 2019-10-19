@@ -26,7 +26,6 @@ import static org.junit.Assert.assertThat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-
 import org.apache.maven.model.Build;
 import org.apache.maven.model.Dependency;
 import org.apache.maven.model.Extension;
@@ -43,330 +42,323 @@ import org.junit.rules.ExpectedException;
  *
  * @author <a href="mailto:brett@apache.org">Brett Porter</a>
  */
-public class ProjectSorterTest
-{
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
-
-    private Parent createParent( MavenProject project )
-    {
-        return createParent( project.getGroupId(), project.getArtifactId(), project.getVersion() );
-    }
-
-    private Parent createParent( String groupId, String artifactId, String version )
-    {
-        Parent plugin = new Parent();
-        plugin.setGroupId( groupId );
-        plugin.setArtifactId( artifactId );
-        plugin.setVersion( version );
-        return plugin;
-    }
-
-    private Dependency createDependency( MavenProject project )
-    {
-        return createDependency( project.getGroupId(), project.getArtifactId(), project.getVersion() );
-    }
-
-    private Dependency createDependency( String groupId, String artifactId, String version )
-    {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId( groupId );
-        dependency.setArtifactId( artifactId );
-        dependency.setVersion( version );
-        return dependency;
-    }
-
-    private Plugin createPlugin( MavenProject project )
-    {
-        return createPlugin( project.getGroupId(), project.getArtifactId(), project.getVersion() );
-    }
-
-    private Plugin createPlugin( String groupId, String artifactId, String version )
-    {
-        Plugin plugin = new Plugin();
-        plugin.setGroupId( groupId );
-        plugin.setArtifactId( artifactId );
-        plugin.setVersion( version );
-        return plugin;
-    }
-
-    private Extension createExtension( String groupId, String artifactId, String version )
-    {
-        Extension extension = new Extension();
-        extension.setGroupId( groupId );
-        extension.setArtifactId( artifactId );
-        extension.setVersion( version );
-        return extension;
-    }
-
-    private static MavenProject createProject( String groupId, String artifactId, String version )
-    {
-        Model model = new Model();
-        model.setGroupId( groupId );
-        model.setArtifactId( artifactId );
-        model.setVersion( version );
-        model.setBuild( new Build() );
-        return new MavenProject( model );
-    }
-
-    @Test
-    public void testShouldNotFailWhenPluginDepReferencesCurrentProject()
-        throws Exception
-    {
-        MavenProject project = createProject( "group", "artifact", "1.0" );
-
-        Build build = project.getModel().getBuild();
-
-        Plugin plugin = createPlugin( "other.group", "other-artifact", "1.0" );
-
-        Dependency dep = createDependency( "group", "artifact", "1.0" );
-
-        plugin.addDependency( dep );
-
-        build.addPlugin( plugin );
-
-        new ProjectSorter( Collections.singletonList( project ) );
-    }
-
-    @Test
-    public void testShouldNotFailWhenManagedPluginDepReferencesCurrentProject()
-        throws Exception
-    {
-        MavenProject project = createProject( "group", "artifact", "1.0" );
-
-        Build build = project.getModel().getBuild();
-
-        PluginManagement pMgmt = new PluginManagement();
-
-        Plugin plugin = createPlugin( "other.group", "other-artifact", "1.0" );
-
-        Dependency dep = createDependency( "group", "artifact", "1.0" );
-
-        plugin.addDependency( dep );
-
-        pMgmt.addPlugin( plugin );
-
-        build.setPluginManagement( pMgmt );
-
-        new ProjectSorter( Collections.singletonList( project ) );
-    }
-
-    @Test
-    public void testShouldNotFailWhenProjectReferencesNonExistentProject()
-        throws Exception
-    {
-        MavenProject project = createProject( "group", "artifact", "1.0" );
-
-        Build build = project.getModel().getBuild();
-
-        Extension extension = createExtension( "other.group", "other-artifact", "1.0" );
-
-        build.addExtension( extension );
-
-        new ProjectSorter( Collections.singletonList( project ) );
-    }
-
-    @Test
-    public void testMatchingArtifactIdsDifferentGroupIds()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
-        MavenProject project1 = createProject( "groupId1", "artifactId", "1.0" );
-        projects.add( project1 );
-        MavenProject project2 = createProject( "groupId2", "artifactId", "1.0" );
-        projects.add( project2 );
-        project1.getDependencies().add( createDependency( project2 ) );
-
-        projects = new ProjectSorter( projects ).getSortedProjects();
-
-        assertEquals( project2, projects.get( 0 ) );
-        assertEquals( project1, projects.get( 1 ) );
-    }
-
-    @Test
-    public void testMatchingGroupIdsDifferentArtifactIds()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
-        MavenProject project1 = createProject( "groupId", "artifactId1", "1.0" );
-        projects.add( project1 );
-        MavenProject project2 = createProject( "groupId", "artifactId2", "1.0" );
-        projects.add( project2 );
-        project1.getDependencies().add( createDependency( project2 ) );
-
-        projects = new ProjectSorter( projects ).getSortedProjects();
-
-        assertEquals( project2, projects.get( 0 ) );
-        assertEquals( project1, projects.get( 1 ) );
-    }
-
-    @Test
-    public void testMatchingIdsAndVersions()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
-        MavenProject project1 = createProject( "groupId", "artifactId", "1.0" );
-        projects.add( project1 );
-        MavenProject project2 = createProject( "groupId", "artifactId", "1.0" );
-        projects.add( project2 );
-        
-        expectedException.expect( DuplicateProjectException.class );
-        expectedException.reportMissingExceptionWithMessage( "Duplicate projects should fail" );
+public class ProjectSorterTest {
+  @Rule public ExpectedException expectedException = ExpectedException.none();
+
+  private Parent createParent(MavenProject project) {
+    return createParent(project.getGroupId(), project.getArtifactId(),
+                        project.getVersion());
+  }
+
+  private Parent createParent(String groupId, String artifactId,
+                              String version) {
+    Parent plugin = new Parent();
+    plugin.setGroupId(groupId);
+    plugin.setArtifactId(artifactId);
+    plugin.setVersion(version);
+    return plugin;
+  }
 
-        new ProjectSorter( projects ).getSortedProjects();
-    }
+  private Dependency createDependency(MavenProject project) {
+    return createDependency(project.getGroupId(), project.getArtifactId(),
+                            project.getVersion());
+  }
+
+  private Dependency createDependency(String groupId, String artifactId,
+                                      String version) {
+    Dependency dependency = new Dependency();
+    dependency.setGroupId(groupId);
+    dependency.setArtifactId(artifactId);
+    dependency.setVersion(version);
+    return dependency;
+  }
+
+  private Plugin createPlugin(MavenProject project) {
+    return createPlugin(project.getGroupId(), project.getArtifactId(),
+                        project.getVersion());
+  }
+
+  private Plugin createPlugin(String groupId, String artifactId,
+                              String version) {
+    Plugin plugin = new Plugin();
+    plugin.setGroupId(groupId);
+    plugin.setArtifactId(artifactId);
+    plugin.setVersion(version);
+    return plugin;
+  }
+
+  private Extension createExtension(String groupId, String artifactId,
+                                    String version) {
+    Extension extension = new Extension();
+    extension.setGroupId(groupId);
+    extension.setArtifactId(artifactId);
+    extension.setVersion(version);
+    return extension;
+  }
+
+  private static MavenProject createProject(String groupId, String artifactId,
+                                            String version) {
+    Model model = new Model();
+    model.setGroupId(groupId);
+    model.setArtifactId(artifactId);
+    model.setVersion(version);
+    model.setBuild(new Build());
+    return new MavenProject(model);
+  }
+
+  @Test
+  public void testShouldNotFailWhenPluginDepReferencesCurrentProject()
+      throws Exception {
+    MavenProject project = createProject("group", "artifact", "1.0");
+
+    Build build = project.getModel().getBuild();
+
+    Plugin plugin = createPlugin("other.group", "other-artifact", "1.0");
+
+    Dependency dep = createDependency("group", "artifact", "1.0");
+
+    plugin.addDependency(dep);
+
+    build.addPlugin(plugin);
+
+    new ProjectSorter(Collections.singletonList(project));
+  }
+
+  @Test
+  public void testShouldNotFailWhenManagedPluginDepReferencesCurrentProject()
+      throws Exception {
+    MavenProject project = createProject("group", "artifact", "1.0");
+
+    Build build = project.getModel().getBuild();
+
+    PluginManagement pMgmt = new PluginManagement();
+
+    Plugin plugin = createPlugin("other.group", "other-artifact", "1.0");
+
+    Dependency dep = createDependency("group", "artifact", "1.0");
+
+    plugin.addDependency(dep);
+
+    pMgmt.addPlugin(plugin);
+
+    build.setPluginManagement(pMgmt);
+
+    new ProjectSorter(Collections.singletonList(project));
+  }
+
+  @Test
+  public void testShouldNotFailWhenProjectReferencesNonExistentProject()
+      throws Exception {
+    MavenProject project = createProject("group", "artifact", "1.0");
 
-    @Test
-    public void testMatchingIdsAndDifferentVersions()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
-        MavenProject project1 = createProject( "groupId", "artifactId", "1.0" );
-        projects.add( project1 );
-        MavenProject project2 = createProject( "groupId", "artifactId", "2.0" );
-        projects.add( project2 );
+    Build build = project.getModel().getBuild();
 
-        projects = new ProjectSorter( projects ).getSortedProjects();
-        assertEquals( project1, projects.get( 0 ) );
-        assertEquals( project2, projects.get( 1 ) );
-    }
+    Extension extension =
+        createExtension("other.group", "other-artifact", "1.0");
 
-    @Test
-    public void testPluginDependenciesInfluenceSorting()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
-
-        MavenProject parentProject = createProject( "groupId", "parent", "1.0" );
-        projects.add( parentProject );
+    build.addExtension(extension);
 
-        MavenProject declaringProject = createProject( "groupId", "declarer", "1.0" );
-        declaringProject.setParent( parentProject );
-        declaringProject.getModel().setParent( createParent( parentProject ) );
-        projects.add( declaringProject );
+    new ProjectSorter(Collections.singletonList(project));
+  }
 
-        MavenProject pluginLevelDepProject = createProject( "groupId", "plugin-level-dep", "1.0" );
-        pluginLevelDepProject.setParent( parentProject );
-        pluginLevelDepProject.getModel().setParent( createParent( parentProject ) );
-        projects.add( pluginLevelDepProject );
+  @Test
+  public void testMatchingArtifactIdsDifferentGroupIds() throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
+    MavenProject project1 = createProject("groupId1", "artifactId", "1.0");
+    projects.add(project1);
+    MavenProject project2 = createProject("groupId2", "artifactId", "1.0");
+    projects.add(project2);
+    project1.getDependencies().add(createDependency(project2));
 
-        MavenProject pluginProject = createProject( "groupId", "plugin", "1.0" );
-        pluginProject.setParent( parentProject );
-        pluginProject.getModel().setParent( createParent( parentProject ) );
-        projects.add( pluginProject );
+    projects = new ProjectSorter(projects).getSortedProjects();
+
+    assertEquals(project2, projects.get(0));
+    assertEquals(project1, projects.get(1));
+  }
+
+  @Test
+  public void testMatchingGroupIdsDifferentArtifactIds() throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
+    MavenProject project1 = createProject("groupId", "artifactId1", "1.0");
+    projects.add(project1);
+    MavenProject project2 = createProject("groupId", "artifactId2", "1.0");
+    projects.add(project2);
+    project1.getDependencies().add(createDependency(project2));
+
+    projects = new ProjectSorter(projects).getSortedProjects();
 
-        Plugin plugin = createPlugin( pluginProject );
+    assertEquals(project2, projects.get(0));
+    assertEquals(project1, projects.get(1));
+  }
 
-        plugin.addDependency( createDependency( pluginLevelDepProject ) );
+  @Test
+  public void testMatchingIdsAndVersions() throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
+    MavenProject project1 = createProject("groupId", "artifactId", "1.0");
+    projects.add(project1);
+    MavenProject project2 = createProject("groupId", "artifactId", "1.0");
+    projects.add(project2);
 
-        Build build = declaringProject.getModel().getBuild();
+    expectedException.expect(DuplicateProjectException.class);
+    expectedException.reportMissingExceptionWithMessage(
+        "Duplicate projects should fail");
 
-        build.addPlugin( plugin );
+    new ProjectSorter(projects).getSortedProjects();
+  }
 
-        projects = new ProjectSorter( projects ).getSortedProjects();
+  @Test
+  public void testMatchingIdsAndDifferentVersions() throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
+    MavenProject project1 = createProject("groupId", "artifactId", "1.0");
+    projects.add(project1);
+    MavenProject project2 = createProject("groupId", "artifactId", "2.0");
+    projects.add(project2);
 
-        assertEquals( parentProject, projects.get( 0 ) );
+    projects = new ProjectSorter(projects).getSortedProjects();
+    assertEquals(project1, projects.get(0));
+    assertEquals(project2, projects.get(1));
+  }
 
-        // the order of these two is non-deterministic, based on when they're added to the reactor.
-        assertThat( projects, hasItem( pluginProject ) );
-        assertThat( projects, hasItem( pluginLevelDepProject ) );
+  @Test
+  public void testPluginDependenciesInfluenceSorting() throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
 
-        // the declaring project MUST be listed after the plugin and its plugin-level dep, though.
-        assertEquals( declaringProject, projects.get( 3 ) );
-    }
+    MavenProject parentProject = createProject("groupId", "parent", "1.0");
+    projects.add(parentProject);
 
-    @Test
-    public void testPluginDependenciesInfluenceSorting_DeclarationInParent()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
+    MavenProject declaringProject = createProject("groupId", "declarer", "1.0");
+    declaringProject.setParent(parentProject);
+    declaringProject.getModel().setParent(createParent(parentProject));
+    projects.add(declaringProject);
 
-        MavenProject parentProject = createProject( "groupId", "parent-declarer", "1.0" );
-        projects.add( parentProject );
+    MavenProject pluginLevelDepProject =
+        createProject("groupId", "plugin-level-dep", "1.0");
+    pluginLevelDepProject.setParent(parentProject);
+    pluginLevelDepProject.getModel().setParent(createParent(parentProject));
+    projects.add(pluginLevelDepProject);
 
-        MavenProject pluginProject = createProject( "groupId", "plugin", "1.0" );
-        pluginProject.setParent( parentProject );
-        pluginProject.getModel().setParent( createParent( parentProject ) );
-        projects.add( pluginProject );
+    MavenProject pluginProject = createProject("groupId", "plugin", "1.0");
+    pluginProject.setParent(parentProject);
+    pluginProject.getModel().setParent(createParent(parentProject));
+    projects.add(pluginProject);
 
-        MavenProject pluginLevelDepProject = createProject( "groupId", "plugin-level-dep", "1.0" );
-        pluginLevelDepProject.setParent( parentProject );
-        pluginLevelDepProject.getModel().setParent( createParent( parentProject ) );
-        projects.add( pluginLevelDepProject );
+    Plugin plugin = createPlugin(pluginProject);
 
-        Plugin plugin = createPlugin( pluginProject );
+    plugin.addDependency(createDependency(pluginLevelDepProject));
 
-        plugin.addDependency( createDependency( pluginLevelDepProject ) );
+    Build build = declaringProject.getModel().getBuild();
 
-        Build build = parentProject.getModel().getBuild();
+    build.addPlugin(plugin);
 
-        build.addPlugin( plugin );
+    projects = new ProjectSorter(projects).getSortedProjects();
 
-        projects = new ProjectSorter( projects ).getSortedProjects();
+    assertEquals(parentProject, projects.get(0));
 
-        assertEquals( parentProject, projects.get( 0 ) );
+    // the order of these two is non-deterministic, based on when they're added
+    // to the reactor.
+    assertThat(projects, hasItem(pluginProject));
+    assertThat(projects, hasItem(pluginLevelDepProject));
 
-        // the order of these two is non-deterministic, based on when they're added to the reactor.
-        assertThat( projects, hasItem( pluginProject ) );
-        assertThat( projects, hasItem( pluginLevelDepProject ) );
-    }
+    // the declaring project MUST be listed after the plugin and its
+    // plugin-level dep, though.
+    assertEquals(declaringProject, projects.get(3));
+  }
 
-    @Test
-    public void testPluginVersionsAreConsidered()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
+  @Test
+  public void testPluginDependenciesInfluenceSorting_DeclarationInParent()
+      throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
 
-        MavenProject pluginProjectA = createProject( "group", "plugin-a", "2.0-SNAPSHOT" );
-        projects.add( pluginProjectA );
-        pluginProjectA.getModel().getBuild().addPlugin( createPlugin( "group", "plugin-b", "1.0" ) );
+    MavenProject parentProject =
+        createProject("groupId", "parent-declarer", "1.0");
+    projects.add(parentProject);
 
-        MavenProject pluginProjectB = createProject( "group", "plugin-b", "2.0-SNAPSHOT" );
-        projects.add( pluginProjectB );
-        pluginProjectB.getModel().getBuild().addPlugin( createPlugin( "group", "plugin-a", "1.0" ) );
+    MavenProject pluginProject = createProject("groupId", "plugin", "1.0");
+    pluginProject.setParent(parentProject);
+    pluginProject.getModel().setParent(createParent(parentProject));
+    projects.add(pluginProject);
 
-        projects = new ProjectSorter( projects ).getSortedProjects();
+    MavenProject pluginLevelDepProject =
+        createProject("groupId", "plugin-level-dep", "1.0");
+    pluginLevelDepProject.setParent(parentProject);
+    pluginLevelDepProject.getModel().setParent(createParent(parentProject));
+    projects.add(pluginLevelDepProject);
 
-        assertThat( projects, hasItem( pluginProjectA ) );
-        assertThat( projects, hasItem( pluginProjectB ) );
-    }
+    Plugin plugin = createPlugin(pluginProject);
 
-    @Test
-    public void testDependencyPrecedesProjectThatUsesSpecificDependencyVersion()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
+    plugin.addDependency(createDependency(pluginLevelDepProject));
 
-        MavenProject usingProject = createProject( "group", "project", "1.0" );
-        projects.add( usingProject );
-        usingProject.getModel().addDependency( createDependency( "group", "dependency", "1.0" ) );
+    Build build = parentProject.getModel().getBuild();
 
-        MavenProject pluginProject = createProject( "group", "dependency", "1.0" );
-        projects.add( pluginProject );
+    build.addPlugin(plugin);
 
-        projects = new ProjectSorter( projects ).getSortedProjects();
+    projects = new ProjectSorter(projects).getSortedProjects();
 
-        assertEquals( pluginProject, projects.get( 0 ) );
-        assertEquals( usingProject, projects.get( 1 ) );
-    }
+    assertEquals(parentProject, projects.get(0));
 
-    @Test
-    public void testDependencyPrecedesProjectThatUsesUnresolvedDependencyVersion()
-        throws Exception
-    {
-        List<MavenProject> projects = new ArrayList<>();
+    // the order of these two is non-deterministic, based on when they're added
+    // to the reactor.
+    assertThat(projects, hasItem(pluginProject));
+    assertThat(projects, hasItem(pluginLevelDepProject));
+  }
 
-        MavenProject usingProject = createProject( "group", "project", "1.0" );
-        projects.add( usingProject );
-        usingProject.getModel().addDependency( createDependency( "group", "dependency", "[1.0,)" ) );
+  @Test
+  public void testPluginVersionsAreConsidered() throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
 
-        MavenProject pluginProject = createProject( "group", "dependency", "1.0" );
-        projects.add( pluginProject );
+    MavenProject pluginProjectA =
+        createProject("group", "plugin-a", "2.0-SNAPSHOT");
+    projects.add(pluginProjectA);
+    pluginProjectA.getModel().getBuild().addPlugin(
+        createPlugin("group", "plugin-b", "1.0"));
 
-        projects = new ProjectSorter( projects ).getSortedProjects();
+    MavenProject pluginProjectB =
+        createProject("group", "plugin-b", "2.0-SNAPSHOT");
+    projects.add(pluginProjectB);
+    pluginProjectB.getModel().getBuild().addPlugin(
+        createPlugin("group", "plugin-a", "1.0"));
 
-        assertEquals( pluginProject, projects.get( 0 ) );
-        assertEquals( usingProject, projects.get( 1 ) );
-    }
+    projects = new ProjectSorter(projects).getSortedProjects();
 
+    assertThat(projects, hasItem(pluginProjectA));
+    assertThat(projects, hasItem(pluginProjectB));
+  }
+
+  @Test
+  public void testDependencyPrecedesProjectThatUsesSpecificDependencyVersion()
+      throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
+
+    MavenProject usingProject = createProject("group", "project", "1.0");
+    projects.add(usingProject);
+    usingProject.getModel().addDependency(
+        createDependency("group", "dependency", "1.0"));
+
+    MavenProject pluginProject = createProject("group", "dependency", "1.0");
+    projects.add(pluginProject);
+
+    projects = new ProjectSorter(projects).getSortedProjects();
+
+    assertEquals(pluginProject, projects.get(0));
+    assertEquals(usingProject, projects.get(1));
+  }
+
+  @Test
+  public void testDependencyPrecedesProjectThatUsesUnresolvedDependencyVersion()
+      throws Exception {
+    List<MavenProject> projects = new ArrayList<>();
+
+    MavenProject usingProject = createProject("group", "project", "1.0");
+    projects.add(usingProject);
+    usingProject.getModel().addDependency(
+        createDependency("group", "dependency", "[1.0,)"));
+
+    MavenProject pluginProject = createProject("group", "dependency", "1.0");
+    projects.add(pluginProject);
+
+    projects = new ProjectSorter(projects).getSortedProjects();
+
+    assertEquals(pluginProject, projects.get(0));
+    assertEquals(usingProject, projects.get(1));
+  }
 }

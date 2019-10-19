@@ -25,32 +25,27 @@ import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertThat;
 
 import java.util.List;
-
 import org.apache.maven.project.MavenProject;
 import org.junit.Test;
 
 /**
  * @author Benjamin Bentmann
  */
-public class DefaultMavenExecutionTest
-{
-    @Test
-    public void testCopyDefault()
-    {
-        MavenExecutionRequest original = new DefaultMavenExecutionRequest();
-        MavenExecutionRequest copy = DefaultMavenExecutionRequest.copy( original );
-        assertNotNull( copy );
-        assertNotSame( copy, original );
-    }
+public class DefaultMavenExecutionTest {
+  @Test
+  public void testCopyDefault() {
+    MavenExecutionRequest original = new DefaultMavenExecutionRequest();
+    MavenExecutionRequest copy = DefaultMavenExecutionRequest.copy(original);
+    assertNotNull(copy);
+    assertNotSame(copy, original);
+  }
 
-    @Test
-    public void testResultWithNullTopologicallySortedProjectsIsEmptyList()
-    {
-        MavenExecutionResult result = new DefaultMavenExecutionResult();
-        result.setTopologicallySortedProjects( null );
-        List<MavenProject> projects = result.getTopologicallySortedProjects();
-        assertNotNull( projects );
-        assertThat( projects, is( empty() ) );
-    }
-
+  @Test
+  public void testResultWithNullTopologicallySortedProjectsIsEmptyList() {
+    MavenExecutionResult result = new DefaultMavenExecutionResult();
+    result.setTopologicallySortedProjects(null);
+    List<MavenProject> projects = result.getTopologicallySortedProjects();
+    assertNotNull(projects);
+    assertThat(projects, is(empty()));
+  }
 }
