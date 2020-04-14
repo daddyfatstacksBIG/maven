@@ -28,11 +28,9 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-
 import javax.inject.Inject;
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.lifecycle.internal.BuildThreadFactory;
 import org.apache.maven.lifecycle.internal.LifecycleModuleBuilder;
@@ -46,153 +44,143 @@ import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.logging.Logger;
 
 /**
- * Builds the full lifecycle in weave-mode (phase by phase as opposed to project-by-project).
- * <p>
- * This builder uses a number of threads equal to the minimum of the degree of concurrency (which is the thread count
- * set with <code>-T</code> on the command-line) and the number of projects to build. As such, building a single project
- * will always result in a sequential build, regardless of the thread count.
+ * Builds the full lifecycle in weave-mode (phase by phase as opposed to
+ * project-by-project). <p> This builder uses a number of threads equal to the
+ * minimum of the degree of concurrency (which is the thread count set with
+ * <code>-T</code> on the command-line) and the number of projects to build. As
+ * such, building a single project will always result in a sequential build,
+ * regardless of the thread count.
  * </p>
- * <strong>NOTE:</strong> This class is not part of any public api and can be changed or deleted without prior notice.
+ * <strong>NOTE:</strong> This class is not part of any public api and can be
+ * changed or deleted without prior notice.
  *
  * @since 3.0
  * @author Kristian Rosenvold
  *         Builds one or more lifecycles for a full module
- *         NOTE: This class is not part of any public api and can be changed or deleted without prior notice.
+ *         NOTE: This class is not part of any public api and can be changed or
+ * deleted without prior notice.
  */
-@Named( "multithreaded" )
+@Named("multithreaded")
 @Singleton
-public class MultiThreadedBuilder
-    implements Builder
-{
+public class MultiThreadedBuilder implements Builder {
 
-    @Inject
-    private Logger logger;
+  @Inject private Logger logger;
 
-    @Inject
-    private LifecycleModuleBuilder lifecycleModuleBuilder;
+  @Inject private LifecycleModuleBuilder lifecycleModuleBuilder;
 
-    public MultiThreadedBuilder()
-    {
+  public MultiThreadedBuilder() {}
+
+  @Override
+  public void build(MavenSession session, ReactorContext reactorContext,
+                    ProjectBuildList projectBuilds,
+                    List<TaskSegment> taskSegments,
+                    ReactorBuildStatus reactorBuildStatus)
+      throws ExecutionException, InterruptedException {
+    int nThreads = Math.min(session.getRequest().getDegreeOfConcurrency(),
+                            session.getProjects().size());
+    boolean parallel = nThreads >= 2;
+    // Propagate the parallel flag to the root session and all of the cloned
+    // sessions in each project segment
+    session.setParallel(parallel);
+    for (ProjectSegment segment : projectBuilds) {
+      segment.getSession().setParallel(parallel);
+    }
+    ExecutorService executor =
+        Executors.newFixedThreadPool(nThreads, new BuildThreadFactory());
+    CompletionService<ProjectSegment> service =
+        new ExecutorCompletionService<>(executor);
+
+    // Currently disabled
+    ThreadOutputMuxer muxer =
+        null; // new ThreadOutputMuxer( analyzer.getProjectBuilds(), System.out
+              // );
+
+    for (TaskSegment taskSegment : taskSegments) {
+      ProjectBuildList segmentProjectBuilds =
+          projectBuilds.getByTaskSegment(taskSegment);
+      Map<MavenProject, ProjectSegment> projectBuildMap =
+          projectBuilds.selectSegment(taskSegment);
+      try {
+        ConcurrencyDependencyGraph analyzer = new ConcurrencyDependencyGraph(
+            segmentProjectBuilds, session.getProjectDependencyGraph());
+        multiThreadedProjectTaskSegmentBuild(analyzer, reactorContext, session,
+                                             service, taskSegment,
+                                             projectBuildMap, muxer);
+        if (reactorContext.getReactorBuildStatus().isHalted()) {
+          break;
+        }
+      } catch (Exception e) {
+        session.getResult().addException(e);
+        break;
+      }
     }
 
-    @Override
-    public void build( MavenSession session, ReactorContext reactorContext, ProjectBuildList projectBuilds,
-                       List<TaskSegment> taskSegments, ReactorBuildStatus reactorBuildStatus )
-        throws ExecutionException, InterruptedException
-    {
-        int nThreads = Math.min( session.getRequest().getDegreeOfConcurrency(), session.getProjects().size() );
-        boolean parallel = nThreads >= 2;
-        // Propagate the parallel flag to the root session and all of the cloned sessions in each project segment
-        session.setParallel( parallel );
-        for ( ProjectSegment segment : projectBuilds )
-        {
-            segment.getSession().setParallel( parallel );
-        }
-        ExecutorService executor = Executors.newFixedThreadPool( nThreads, new BuildThreadFactory() );
-        CompletionService<ProjectSegment> service = new ExecutorCompletionService<>( executor );
+    executor.shutdown();
+    executor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+  }
 
-        // Currently disabled
-        ThreadOutputMuxer muxer = null; // new ThreadOutputMuxer( analyzer.getProjectBuilds(), System.out );
+  private void multiThreadedProjectTaskSegmentBuild(
+      ConcurrencyDependencyGraph analyzer, ReactorContext reactorContext,
+      MavenSession rootSession, CompletionService<ProjectSegment> service,
+      TaskSegment taskSegment,
+      Map<MavenProject, ProjectSegment> projectBuildList,
+      ThreadOutputMuxer muxer) {
 
-        for ( TaskSegment taskSegment : taskSegments )
-        {
-            ProjectBuildList segmentProjectBuilds = projectBuilds.getByTaskSegment( taskSegment );
-            Map<MavenProject, ProjectSegment> projectBuildMap = projectBuilds.selectSegment( taskSegment );
-            try
-            {
-                ConcurrencyDependencyGraph analyzer =
-                    new ConcurrencyDependencyGraph( segmentProjectBuilds,
-                                                    session.getProjectDependencyGraph() );
-                multiThreadedProjectTaskSegmentBuild( analyzer, reactorContext, session, service, taskSegment,
-                                                      projectBuildMap, muxer );
-                if ( reactorContext.getReactorBuildStatus().isHalted() )
-                {
-                    break;
-                }
-            }
-            catch ( Exception e )
-            {
-                session.getResult().addException( e );
-                break;
-            }
-
-        }
-
-        executor.shutdown();
-        executor.awaitTermination( Long.MAX_VALUE, TimeUnit.MILLISECONDS );
+    // schedule independent projects
+    for (MavenProject mavenProject : analyzer.getRootSchedulableBuilds()) {
+      ProjectSegment projectSegment = projectBuildList.get(mavenProject);
+      logger.debug("Scheduling: " + projectSegment.getProject());
+      Callable<ProjectSegment> cb = createBuildCallable(
+          rootSession, projectSegment, reactorContext, taskSegment, muxer);
+      service.submit(cb);
     }
 
-    private void multiThreadedProjectTaskSegmentBuild( ConcurrencyDependencyGraph analyzer,
-                                                       ReactorContext reactorContext, MavenSession rootSession,
-                                                       CompletionService<ProjectSegment> service,
-                                                       TaskSegment taskSegment,
-                                                       Map<MavenProject, ProjectSegment> projectBuildList,
-                                                       ThreadOutputMuxer muxer )
-    {
+    // for each finished project
+    for (int i = 0; i < analyzer.getNumberOfBuilds(); i++) {
+      try {
+        ProjectSegment projectBuild = service.take().get();
+        if (reactorContext.getReactorBuildStatus().isHalted()) {
+          break;
+        }
 
-        // schedule independent projects
-        for ( MavenProject mavenProject : analyzer.getRootSchedulableBuilds() )
-        {
-            ProjectSegment projectSegment = projectBuildList.get( mavenProject );
-            logger.debug( "Scheduling: " + projectSegment.getProject() );
+        // MNG-6170: Only schedule other modules from reactor if we have more
+        // modules to build than one.
+        if (analyzer.getNumberOfBuilds() > 1) {
+          final List<MavenProject> newItemsThatCanBeBuilt =
+              analyzer.markAsFinished(projectBuild.getProject());
+          for (MavenProject mavenProject : newItemsThatCanBeBuilt) {
+            ProjectSegment scheduledDependent =
+                projectBuildList.get(mavenProject);
+            logger.debug("Scheduling: " + scheduledDependent);
             Callable<ProjectSegment> cb =
-                createBuildCallable( rootSession, projectSegment, reactorContext, taskSegment, muxer );
-            service.submit( cb );
+                createBuildCallable(rootSession, scheduledDependent,
+                                    reactorContext, taskSegment, muxer);
+            service.submit(cb);
+          }
         }
-
-        // for each finished project
-        for ( int i = 0; i < analyzer.getNumberOfBuilds(); i++ )
-        {
-            try
-            {
-                ProjectSegment projectBuild = service.take().get();
-                if ( reactorContext.getReactorBuildStatus().isHalted() )
-                {
-                    break;
-                }
-
-                // MNG-6170: Only schedule other modules from reactor if we have more modules to build than one.
-                if ( analyzer.getNumberOfBuilds() > 1 )
-                {
-                    final List<MavenProject> newItemsThatCanBeBuilt =
-                        analyzer.markAsFinished( projectBuild.getProject() );
-                    for ( MavenProject mavenProject : newItemsThatCanBeBuilt )
-                    {
-                        ProjectSegment scheduledDependent = projectBuildList.get( mavenProject );
-                        logger.debug( "Scheduling: " + scheduledDependent );
-                        Callable<ProjectSegment> cb =
-                            createBuildCallable( rootSession, scheduledDependent, reactorContext, taskSegment, muxer );
-                        service.submit( cb );
-                    }
-                }
-            }
-            catch ( InterruptedException e )
-            {
-                rootSession.getResult().addException( e );
-                break;
-            }
-            catch ( ExecutionException e )
-            {
-                // TODO MNG-5766 changes likely made this redundant
-                rootSession.getResult().addException( e );
-                break;
-            }
-        }
+      } catch (InterruptedException e) {
+        rootSession.getResult().addException(e);
+        break;
+      } catch (ExecutionException e) {
+        // TODO MNG-5766 changes likely made this redundant
+        rootSession.getResult().addException(e);
+        break;
+      }
     }
+  }
 
-    private Callable<ProjectSegment> createBuildCallable( final MavenSession rootSession,
-                                                          final ProjectSegment projectBuild,
-                                                          final ReactorContext reactorContext,
-                                                          final TaskSegment taskSegment, final ThreadOutputMuxer muxer )
-    {
-        return () ->
-        {
-            // muxer.associateThreadWithProjectSegment( projectBuild );
-            lifecycleModuleBuilder.buildProject( projectBuild.getSession(), rootSession, reactorContext,
-                                                 projectBuild.getProject(), taskSegment );
-            // muxer.setThisModuleComplete( projectBuild );
+  private Callable<ProjectSegment> createBuildCallable(
+      final MavenSession rootSession, final ProjectSegment projectBuild,
+      final ReactorContext reactorContext, final TaskSegment taskSegment,
+      final ThreadOutputMuxer muxer) {
+    return () -> {
+      // muxer.associateThreadWithProjectSegment( projectBuild );
+      lifecycleModuleBuilder.buildProject(
+          projectBuild.getSession(), rootSession, reactorContext,
+          projectBuild.getProject(), taskSegment);
+      // muxer.setThisModuleComplete( projectBuild );
 
-            return projectBuild;
-        };
-    }
+      return projectBuild;
+    };
+  }
 }

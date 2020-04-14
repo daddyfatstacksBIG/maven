@@ -20,142 +20,116 @@ package org.apache.maven.building;
  */
 
 /**
- * Describes a problem that was encountered during settings building. A problem can either be an exception that was
- * thrown or a simple string message. In addition, a problem carries a hint about its source, e.g. the settings file
+ * Describes a problem that was encountered during settings building. A problem
+ * can either be an exception that was thrown or a simple string message. In
+ * addition, a problem carries a hint about its source, e.g. the settings file
  * that exhibits the problem.
  *
  * @author Benjamin Bentmann
  * @author Robert Scholte
  */
-class DefaultProblem
-    implements Problem
-{
+class DefaultProblem implements Problem {
 
-    private final String source;
+  private final String source;
 
-    private final int lineNumber;
+  private final int lineNumber;
 
-    private final int columnNumber;
+  private final int columnNumber;
 
-    private final String message;
+  private final String message;
 
-    private final Exception exception;
+  private final Exception exception;
 
-    private final Severity severity;
+  private final Severity severity;
 
-    /**
-     * Creates a new problem with the specified message and exception.
-     * Either {@code message} or {@code exception} is required
-     *
-     * @param message The message describing the problem, may be {@code null}.
-     * @param severity The severity level of the problem, may be {@code null} to default to
-     *            {@link org.apache.maven.building.Problem.Severity#ERROR}.
-     * @param source A hint about the source of the problem like a file path, may be {@code null}.
-     * @param lineNumber The one-based index of the line containing the problem or {@code -1} if unknown.
-     * @param columnNumber The one-based index of the column containing the problem or {@code -1} if unknown.
-     * @param exception The exception that caused this problem, may be {@code null}.
-     */
-    DefaultProblem( String message, Severity severity, String source, int lineNumber, int columnNumber,
-                                   Exception exception )
-    {
-        this.message = message;
-        this.severity = ( severity != null ) ? severity : Severity.ERROR;
-        this.source = ( source != null ) ? source : "";
-        this.lineNumber = lineNumber;
-        this.columnNumber = columnNumber;
-        this.exception = exception;
+  /**
+   * Creates a new problem with the specified message and exception.
+   * Either {@code message} or {@code exception} is required
+   *
+   * @param message The message describing the problem, may be {@code null}.
+   * @param severity The severity level of the problem, may be {@code null} to
+   *     default to
+   *            {@link org.apache.maven.building.Problem.Severity#ERROR}.
+   * @param source A hint about the source of the problem like a file path, may
+   *     be {@code null}.
+   * @param lineNumber The one-based index of the line containing the problem or
+   *     {@code -1} if unknown.
+   * @param columnNumber The one-based index of the column containing the
+   *     problem or {@code -1} if unknown.
+   * @param exception The exception that caused this problem, may be {@code
+   *     null}.
+   */
+  DefaultProblem(String message, Severity severity, String source,
+                 int lineNumber, int columnNumber, Exception exception) {
+    this.message = message;
+    this.severity = (severity != null) ? severity : Severity.ERROR;
+    this.source = (source != null) ? source : "";
+    this.lineNumber = lineNumber;
+    this.columnNumber = columnNumber;
+    this.exception = exception;
+  }
+
+  public String getSource() { return source; }
+
+  public int getLineNumber() { return lineNumber; }
+
+  public int getColumnNumber() { return columnNumber; }
+
+  public String getLocation() {
+    StringBuilder buffer = new StringBuilder(256);
+
+    if (getSource().length() > 0) {
+      if (buffer.length() > 0) {
+        buffer.append(", ");
+      }
+      buffer.append(getSource());
     }
 
-    public String getSource()
-    {
-        return source;
+    if (getLineNumber() > 0) {
+      if (buffer.length() > 0) {
+        buffer.append(", ");
+      }
+      buffer.append("line ").append(getLineNumber());
     }
 
-    public int getLineNumber()
-    {
-        return lineNumber;
+    if (getColumnNumber() > 0) {
+      if (buffer.length() > 0) {
+        buffer.append(", ");
+      }
+      buffer.append("column ").append(getColumnNumber());
     }
 
-    public int getColumnNumber()
-    {
-        return columnNumber;
+    return buffer.toString();
+  }
+
+  public Exception getException() { return exception; }
+
+  public String getMessage() {
+    String msg;
+
+    if (message != null && message.length() > 0) {
+      msg = message;
+    } else {
+      msg = exception.getMessage();
+
+      if (msg == null) {
+        msg = "";
+      }
     }
 
-    public String getLocation()
-    {
-        StringBuilder buffer = new StringBuilder( 256 );
+    return msg;
+  }
 
-        if ( getSource().length() > 0 )
-        {
-            if ( buffer.length() > 0 )
-            {
-                buffer.append( ", " );
-            }
-            buffer.append( getSource() );
-        }
+  public Severity getSeverity() { return severity; }
 
-        if ( getLineNumber() > 0 )
-        {
-            if ( buffer.length() > 0 )
-            {
-                buffer.append( ", " );
-            }
-            buffer.append( "line " ).append( getLineNumber() );
-        }
+  @Override
+  public String toString() {
+    StringBuilder buffer = new StringBuilder(128);
 
-        if ( getColumnNumber() > 0 )
-        {
-            if ( buffer.length() > 0 )
-            {
-                buffer.append( ", " );
-            }
-            buffer.append( "column " ).append( getColumnNumber() );
-        }
+    buffer.append('[').append(getSeverity()).append("] ");
+    buffer.append(getMessage());
+    buffer.append(" @ ").append(getLocation());
 
-        return buffer.toString();
-    }
-
-    public Exception getException()
-    {
-        return exception;
-    }
-
-    public String getMessage()
-    {
-        String msg;
-
-        if ( message != null && message.length() > 0 )
-        {
-            msg = message;
-        }
-        else
-        {
-            msg = exception.getMessage();
-
-            if ( msg == null )
-            {
-                msg = "";
-            }
-        }
-
-        return msg;
-    }
-
-    public Severity getSeverity()
-    {
-        return severity;
-    }
-
-    @Override
-    public String toString()
-    {
-        StringBuilder buffer = new StringBuilder( 128 );
-
-        buffer.append( '[' ).append( getSeverity() ).append( "] " );
-        buffer.append( getMessage() );
-        buffer.append( " @ " ).append( getLocation() );
-
-        return buffer.toString();
-    }
-
+    return buffer.toString();
+  }
 }

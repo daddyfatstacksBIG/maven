@@ -23,16 +23,14 @@ import javax.inject.Named;
 import javax.inject.Singleton;
 
 /**
- * This realizes the metadata source via the default hint to provide backward-compat with Maven 2.x whose Plexus version
- * registered component descriptors twice: once keyed by role+roleHint and once keyed by role only. This effectively
- * made the metadata source available with its original role hint ("maven") as well as the default hint.
+ * This realizes the metadata source via the default hint to provide
+ * backward-compat with Maven 2.x whose Plexus version registered component
+ * descriptors twice: once keyed by role+roleHint and once keyed by role only.
+ * This effectively made the metadata source available with its original role
+ * hint ("maven") as well as the default hint.
  *
  * @author Benjamin Bentmann
  */
 @Named
 @Singleton
-public class DefaultMetadataSource
-    extends MavenMetadataSource
-{
-
-}
+public class DefaultMetadataSource extends MavenMetadataSource {}

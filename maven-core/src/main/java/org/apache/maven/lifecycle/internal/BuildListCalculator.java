@@ -22,50 +22,45 @@ package org.apache.maven.lifecycle.internal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.lifecycle.internal.builder.BuilderCommon;
 import org.apache.maven.project.MavenProject;
 
 /**
- * <strong>NOTE:</strong> This class is not part of any public api and can be changed or deleted without prior notice.
- * 
+ * <strong>NOTE:</strong> This class is not part of any public api and can be
+ * changed or deleted without prior notice.
+ *
  * @since 3.0
  * @author Kristian Rosenvold
  */
 @Named
 @Singleton
-public class BuildListCalculator
-{
-    public ProjectBuildList calculateProjectBuilds( MavenSession session, List<TaskSegment> taskSegments )
-    {
-        List<ProjectSegment> projectBuilds = new ArrayList<>();
+public class BuildListCalculator {
+  public ProjectBuildList
+  calculateProjectBuilds(MavenSession session, List<TaskSegment> taskSegments) {
+    List<ProjectSegment> projectBuilds = new ArrayList<>();
 
-        MavenProject rootProject = session.getTopLevelProject();
+    MavenProject rootProject = session.getTopLevelProject();
 
-        for ( TaskSegment taskSegment : taskSegments )
-        {
-            List<MavenProject> projects;
+    for (TaskSegment taskSegment : taskSegments) {
+      List<MavenProject> projects;
 
-            if ( taskSegment.isAggregating() )
-            {
-                projects = Collections.singletonList( rootProject );
-            }
-            else
-            {
-                projects = session.getProjects();
-            }
-            for ( MavenProject project : projects )
-            {
-                BuilderCommon.attachToThread( project ); // Not totally sure if this is needed for anything
-                MavenSession copiedSession = session.clone();
-                copiedSession.setCurrentProject( project );
-                projectBuilds.add( new ProjectSegment( project, taskSegment, copiedSession ) );
-            }
-        }
-        return new ProjectBuildList( projectBuilds );
+      if (taskSegment.isAggregating()) {
+        projects = Collections.singletonList(rootProject);
+      } else {
+        projects = session.getProjects();
+      }
+      for (MavenProject project : projects) {
+        BuilderCommon.attachToThread(
+            project); // Not totally sure if this is needed for anything
+        MavenSession copiedSession = session.clone();
+        copiedSession.setCurrentProject(project);
+        projectBuilds.add(
+            new ProjectSegment(project, taskSegment, copiedSession));
+      }
     }
+    return new ProjectBuildList(projectBuilds);
+  }
 }

@@ -21,7 +21,6 @@ package org.apache.maven.settings.building;
 
 import java.util.ArrayList;
 import java.util.List;
-
 import org.apache.maven.settings.Settings;
 
 /**
@@ -29,30 +28,25 @@ import org.apache.maven.settings.Settings;
  *
  * @author Benjamin Bentmann
  */
-class DefaultSettingsBuildingResult
-    implements SettingsBuildingResult
-{
+class DefaultSettingsBuildingResult implements SettingsBuildingResult {
 
-    private Settings effectiveSettings;
+  private Settings effectiveSettings;
 
-    private List<SettingsProblem> problems;
+  private List<SettingsProblem> problems;
 
-    DefaultSettingsBuildingResult( Settings effectiveSettings, List<SettingsProblem> problems )
-    {
-        this.effectiveSettings = effectiveSettings;
-        this.problems = ( problems != null ) ? problems : new ArrayList<>();
-    }
+  DefaultSettingsBuildingResult(Settings effectiveSettings,
+                                List<SettingsProblem> problems) {
+    this.effectiveSettings = effectiveSettings;
+    this.problems = (problems != null) ? problems : new ArrayList<>();
+  }
 
-    @Override
-    public Settings getEffectiveSettings()
-    {
-        return effectiveSettings;
-    }
+  @Override
+  public Settings getEffectiveSettings() {
+    return effectiveSettings;
+  }
 
-    @Override
-    public List<SettingsProblem> getProblems()
-    {
-        return problems;
-    }
-
+  @Override
+  public List<SettingsProblem> getProblems() {
+    return problems;
+  }
 }

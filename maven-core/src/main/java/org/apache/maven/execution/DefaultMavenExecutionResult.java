@@ -24,88 +24,70 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
-
 import org.apache.maven.project.DependencyResolutionResult;
 import org.apache.maven.project.MavenProject;
 
 /** @author Jason van Zyl */
-public class DefaultMavenExecutionResult
-    implements MavenExecutionResult
-{
-    private MavenProject project;
+public class DefaultMavenExecutionResult implements MavenExecutionResult {
+  private MavenProject project;
 
-    private List<MavenProject> topologicallySortedProjects = Collections.emptyList();
+  private List<MavenProject> topologicallySortedProjects =
+      Collections.emptyList();
 
-    private DependencyResolutionResult dependencyResolutionResult;
+  private DependencyResolutionResult dependencyResolutionResult;
 
-    private final List<Throwable> exceptions = new CopyOnWriteArrayList<>();
+  private final List<Throwable> exceptions = new CopyOnWriteArrayList<>();
 
-    private final Map<MavenProject, BuildSummary> buildSummaries =
-        Collections.synchronizedMap( new IdentityHashMap<>() );
+  private final Map<MavenProject, BuildSummary> buildSummaries =
+      Collections.synchronizedMap(new IdentityHashMap<>());
 
-    public MavenExecutionResult setProject( MavenProject project )
-    {
-        this.project = project;
+  public MavenExecutionResult setProject(MavenProject project) {
+    this.project = project;
 
-        return this;
-    }
+    return this;
+  }
 
-    public MavenProject getProject()
-    {
-        return project;
-    }
+  public MavenProject getProject() { return project; }
 
-    public MavenExecutionResult setTopologicallySortedProjects( List<MavenProject> topologicallySortedProjects )
-    {
-        this.topologicallySortedProjects = topologicallySortedProjects;
+  public MavenExecutionResult setTopologicallySortedProjects(
+      List<MavenProject> topologicallySortedProjects) {
+    this.topologicallySortedProjects = topologicallySortedProjects;
 
-        return this;
-    }
+    return this;
+  }
 
-    public List<MavenProject> getTopologicallySortedProjects()
-    {
-        return null == topologicallySortedProjects
-                   ? Collections.emptyList()
-                   : Collections.unmodifiableList( topologicallySortedProjects );
+  public List<MavenProject> getTopologicallySortedProjects() {
+    return null == topologicallySortedProjects
+        ? Collections.emptyList()
+        : Collections.unmodifiableList(topologicallySortedProjects);
+  }
 
-    }
+  public DependencyResolutionResult getDependencyResolutionResult() {
+    return dependencyResolutionResult;
+  }
 
-    public DependencyResolutionResult getDependencyResolutionResult()
-    {
-        return dependencyResolutionResult;
-    }
+  public MavenExecutionResult setDependencyResolutionResult(
+      DependencyResolutionResult dependencyResolutionResult) {
+    this.dependencyResolutionResult = dependencyResolutionResult;
 
-    public MavenExecutionResult setDependencyResolutionResult( DependencyResolutionResult dependencyResolutionResult )
-    {
-        this.dependencyResolutionResult = dependencyResolutionResult;
+    return this;
+  }
 
-        return this;
-    }
+  public List<Throwable> getExceptions() { return exceptions; }
 
-    public List<Throwable> getExceptions()
-    {
-        return exceptions;
-    }
+  public MavenExecutionResult addException(Throwable t) {
+    exceptions.add(t);
 
-    public MavenExecutionResult addException( Throwable t )
-    {
-        exceptions.add( t );
+    return this;
+  }
 
-        return this;
-    }
+  public boolean hasExceptions() { return !getExceptions().isEmpty(); }
 
-    public boolean hasExceptions()
-    {
-        return !getExceptions().isEmpty();
-    }
+  public BuildSummary getBuildSummary(MavenProject project) {
+    return buildSummaries.get(project);
+  }
 
-    public BuildSummary getBuildSummary( MavenProject project )
-    {
-        return buildSummaries.get( project );
-    }
-
-    public void addBuildSummary( BuildSummary summary )
-    {
-        buildSummaries.put( summary.getProject(), summary );
-    }
+  public void addBuildSummary(BuildSummary summary) {
+    buildSummaries.put(summary.getProject(), summary);
+  }
 }

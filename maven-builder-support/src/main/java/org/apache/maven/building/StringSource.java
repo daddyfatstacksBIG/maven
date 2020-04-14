@@ -29,92 +29,74 @@ import java.nio.charset.StandardCharsets;
  *
  * @author Benjamin Bentmann
  */
-public class StringSource
-    implements Source
-{
-    private final String content;
+public class StringSource implements Source {
+  private final String content;
 
-    private final String location;
+  private final String location;
 
-    private final int hashCode;
+  private final int hashCode;
 
-    /**
-     * Creates a new source backed by the specified string.
-     *
-     * @param content The String representation, may be empty or {@code null}.
-     */
-    public StringSource( CharSequence content )
-    {
-        this( content, null );
+  /**
+   * Creates a new source backed by the specified string.
+   *
+   * @param content The String representation, may be empty or {@code null}.
+   */
+  public StringSource(CharSequence content) { this(content, null); }
+
+  /**
+   * Creates a new source backed by the specified string.
+   *
+   * @param content The String representation, may be empty or {@code null}.
+   * @param location The location to report for this use, may be {@code null}.
+   */
+  public StringSource(CharSequence content, String location) {
+    this.content = (content != null) ? content.toString() : "";
+    this.location = (location != null) ? location : "(memory)";
+    this.hashCode = this.content.hashCode();
+  }
+
+  @Override
+  public InputStream getInputStream() throws IOException {
+    return new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
+  }
+
+  @Override
+  public String getLocation() {
+    return location;
+  }
+
+  /**
+   * Gets the content of this source.
+   *
+   * @return The underlying character stream, never {@code null}.
+   */
+  public String getContent() { return content; }
+
+  @Override
+  public String toString() {
+    return getLocation();
+  }
+
+  @Override
+  public int hashCode() {
+    return hashCode;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
     }
 
-    /**
-     * Creates a new source backed by the specified string.
-     *
-     * @param content The String representation, may be empty or {@code null}.
-     * @param location The location to report for this use, may be {@code null}.
-     */
-    public StringSource( CharSequence content, String location )
-    {
-        this.content = ( content != null ) ? content.toString() : "";
-        this.location = ( location != null ) ? location : "(memory)";
-        this.hashCode = this.content.hashCode();
+    if (obj == null) {
+      return false;
     }
 
-    @Override
-    public InputStream getInputStream()
-        throws IOException
-    {
-        return new ByteArrayInputStream( content.getBytes( StandardCharsets.UTF_8 ) );
+    if (!StringSource.class.equals(obj.getClass())) {
+      return false;
     }
 
-    @Override
-    public String getLocation()
-    {
-        return location;
-    }
-
-    /**
-     * Gets the content of this source.
-     *
-     * @return The underlying character stream, never {@code null}.
-     */
-    public String getContent()
-    {
-        return content;
-    }
-
-    @Override
-    public String toString()
-    {
-        return getLocation();
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return hashCode;
-    }
-
-    @Override
-    public boolean equals( Object obj )
-    {
-        if ( this == obj ) 
-        {
-            return true;
-        }
-
-        if ( obj == null )
-        {
-            return false;
-        }
-
-        if ( !StringSource.class.equals( obj.getClass() ) )
-        {
-            return false;
-        }
-
-        StringSource other = (StringSource) obj;
-        return this.content.equals( other.content );
-    }
+    StringSource other = (StringSource)obj;
+    return this.content.equals(other.content);
+  }
 }

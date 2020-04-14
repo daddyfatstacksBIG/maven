@@ -19,31 +19,27 @@ package org.apache.maven.logwrapper;
  * under the License.
  */
 
+import static org.junit.Assert.assertTrue;
+
 import org.junit.Test;
 import org.slf4j.event.Level;
 
-import static org.junit.Assert.assertTrue;
+public class LogLevelRecorderTest {
+  @Test
+  public void createsLogLevelRecorder() {
+    LogLevelRecorder logLevelRecorder = new LogLevelRecorder("WARN");
+    logLevelRecorder.record(Level.ERROR);
 
-public class LogLevelRecorderTest
-{
-    @Test
-    public void createsLogLevelRecorder()
-    {
-        LogLevelRecorder logLevelRecorder = new LogLevelRecorder( "WARN" );
-        logLevelRecorder.record( Level.ERROR );
+    assertTrue(logLevelRecorder.metThreshold());
+  }
 
-        assertTrue( logLevelRecorder.metThreshold() );
-    }
+  @Test(expected = IllegalArgumentException.class)
+  public void failsOnLowerThanWarn() {
+    new LogLevelRecorder("INFO");
+  }
 
-    @Test( expected = IllegalArgumentException.class )
-    public void failsOnLowerThanWarn ()
-    {
-        new LogLevelRecorder( "INFO" );
-    }
-
-    @Test( expected = IllegalArgumentException.class )
-    public void failsOnUnknownLogLevel ()
-    {
-        new LogLevelRecorder( "SEVERE" );
-    }
+  @Test(expected = IllegalArgumentException.class)
+  public void failsOnUnknownLogLevel() {
+    new LogLevelRecorder("SEVERE");
+  }
 }

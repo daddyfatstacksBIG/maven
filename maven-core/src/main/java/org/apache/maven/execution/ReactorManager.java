@@ -19,6 +19,10 @@ package org.apache.maven.execution;
  * under the License.
  */
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import org.apache.maven.artifact.ArtifactUtils;
 import org.apache.maven.plugin.descriptor.PluginDescriptor;
 import org.apache.maven.project.DuplicateProjectException;
@@ -26,165 +30,137 @@ import org.apache.maven.project.MavenProject;
 import org.apache.maven.project.ProjectSorter;
 import org.codehaus.plexus.util.dag.CycleDetectedException;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 /**
  * ReactorManager - unused
  */
 @Deprecated
-public class ReactorManager
-{
-    public static final String FAIL_FAST = "fail-fast";
+public class ReactorManager {
+  public static final String FAIL_FAST = "fail-fast";
 
-    public static final String FAIL_AT_END = "fail-at-end";
+  public static final String FAIL_AT_END = "fail-at-end";
 
-    public static final String FAIL_NEVER = "fail-never";
+  public static final String FAIL_NEVER = "fail-never";
 
-    public static final String MAKE_MODE = "make";
+  public static final String MAKE_MODE = "make";
 
-    public static final String MAKE_DEPENDENTS_MODE = "make-dependents";
+  public static final String MAKE_DEPENDENTS_MODE = "make-dependents";
 
-    // make projects that depend on me, and projects that I depend on
-    public static final String MAKE_BOTH_MODE = "make-both";
+  // make projects that depend on me, and projects that I depend on
+  public static final String MAKE_BOTH_MODE = "make-both";
 
-    private List<String> blackList = new ArrayList<>();
+  private List<String> blackList = new ArrayList<>();
 
-    private Map<String, BuildFailure> buildFailuresByProject = new HashMap<>();
+  private Map<String, BuildFailure> buildFailuresByProject = new HashMap<>();
 
-    private Map<String, Map<String, Map>> pluginContextsByProjectAndPluginKey = new HashMap<>();
+  private Map<String, Map<String, Map>> pluginContextsByProjectAndPluginKey =
+      new HashMap<>();
 
-    private String failureBehavior = FAIL_FAST;
+  private String failureBehavior = FAIL_FAST;
 
-    private final ProjectSorter sorter;
+  private final ProjectSorter sorter;
 
-    private Map<String, BuildSuccess> buildSuccessesByProject = new HashMap<>();
+  private Map<String, BuildSuccess> buildSuccessesByProject = new HashMap<>();
 
-    public ReactorManager( List<MavenProject> projects )
-        throws CycleDetectedException, DuplicateProjectException
-    {
-        this.sorter = new ProjectSorter( projects );
+  public ReactorManager(List<MavenProject> projects)
+      throws CycleDetectedException, DuplicateProjectException {
+    this.sorter = new ProjectSorter(projects);
+  }
+
+  public Map getPluginContext(PluginDescriptor plugin, MavenProject project) {
+    Map<String, Map> pluginContextsByKey =
+        pluginContextsByProjectAndPluginKey.computeIfAbsent(
+            project.getId(), k -> new HashMap<>());
+
+    return pluginContextsByKey.computeIfAbsent(plugin.getPluginLookupKey(),
+                                               k -> new HashMap<>());
+  }
+
+  public void setFailureBehavior(String failureBehavior) {
+    if (failureBehavior == null) {
+      this.failureBehavior = FAIL_FAST; // default
+      return;
     }
-
-    public Map getPluginContext( PluginDescriptor plugin, MavenProject project )
-    {
-        Map<String, Map> pluginContextsByKey =
-            pluginContextsByProjectAndPluginKey.computeIfAbsent( project.getId(), k -> new HashMap<>() );
-
-        return pluginContextsByKey.computeIfAbsent( plugin.getPluginLookupKey(), k -> new HashMap<>() );
+    if (FAIL_FAST.equals(failureBehavior) ||
+        FAIL_AT_END.equals(failureBehavior) ||
+        FAIL_NEVER.equals(failureBehavior)) {
+      this.failureBehavior = failureBehavior;
+    } else {
+      throw new IllegalArgumentException(
+          "Invalid failure behavior (must be one of: \'" + FAIL_FAST +
+          "\', \'" + FAIL_AT_END + "\', \'" + FAIL_NEVER + "\').");
     }
+  }
 
-    public void setFailureBehavior( String failureBehavior )
-    {
-        if ( failureBehavior == null )
-        {
-            this.failureBehavior = FAIL_FAST; // default
-            return;
+  public String getFailureBehavior() { return failureBehavior; }
+
+  public void blackList(MavenProject project) {
+    blackList(getProjectKey(project));
+  }
+
+  private void blackList(String id) {
+    if (!blackList.contains(id)) {
+      blackList.add(id);
+
+      List<String> dependents = sorter.getDependents(id);
+
+      if (dependents != null && !dependents.isEmpty()) {
+        for (String dependentId : dependents) {
+          if (!buildSuccessesByProject.containsKey(dependentId) &&
+              !buildFailuresByProject.containsKey(dependentId)) {
+            blackList(dependentId);
+          }
         }
-        if ( FAIL_FAST.equals( failureBehavior ) || FAIL_AT_END.equals( failureBehavior ) || FAIL_NEVER.equals(
-            failureBehavior ) )
-        {
-            this.failureBehavior = failureBehavior;
-        }
-        else
-        {
-            throw new IllegalArgumentException(
-                "Invalid failure behavior (must be one of: \'" + FAIL_FAST + "\', \'" + FAIL_AT_END + "\', \'"
-                    + FAIL_NEVER + "\')." );
-        }
+      }
     }
+  }
 
-    public String getFailureBehavior()
-    {
-        return failureBehavior;
-    }
+  public boolean isBlackListed(MavenProject project) {
+    return blackList.contains(getProjectKey(project));
+  }
 
-    public void blackList( MavenProject project )
-    {
-        blackList( getProjectKey( project ) );
-    }
+  private static String getProjectKey(MavenProject project) {
+    return ArtifactUtils.versionlessKey(project.getGroupId(),
+                                        project.getArtifactId());
+  }
 
-    private void blackList( String id )
-    {
-        if ( !blackList.contains( id ) )
-        {
-            blackList.add( id );
+  public void registerBuildFailure(MavenProject project, Exception error,
+                                   String task, long time) {
+    buildFailuresByProject.put(getProjectKey(project),
+                               new BuildFailure(project, time, error));
+  }
 
-            List<String> dependents = sorter.getDependents( id );
+  public boolean hasBuildFailures() {
+    return !buildFailuresByProject.isEmpty();
+  }
 
-            if ( dependents != null && !dependents.isEmpty() )
-            {
-                for ( String dependentId : dependents )
-                {
-                    if ( !buildSuccessesByProject.containsKey( dependentId ) && !buildFailuresByProject.containsKey(
-                        dependentId ) )
-                    {
-                        blackList( dependentId );
-                    }
-                }
-            }
-        }
-    }
+  public boolean hasBuildFailure(MavenProject project) {
+    return buildFailuresByProject.containsKey(getProjectKey(project));
+  }
 
-    public boolean isBlackListed( MavenProject project )
-    {
-        return blackList.contains( getProjectKey( project ) );
-    }
+  public boolean hasMultipleProjects() { return sorter.hasMultipleProjects(); }
 
-    private static String getProjectKey( MavenProject project )
-    {
-        return ArtifactUtils.versionlessKey( project.getGroupId(), project.getArtifactId() );
-    }
+  public List<MavenProject> getSortedProjects() {
+    return sorter.getSortedProjects();
+  }
 
-    public void registerBuildFailure( MavenProject project, Exception error, String task, long time )
-    {
-        buildFailuresByProject.put( getProjectKey( project ), new BuildFailure( project, time, error ) );
-    }
+  public boolean hasBuildSuccess(MavenProject project) {
+    return buildSuccessesByProject.containsKey(getProjectKey(project));
+  }
 
-    public boolean hasBuildFailures()
-    {
-        return !buildFailuresByProject.isEmpty();
-    }
+  public void registerBuildSuccess(MavenProject project, long time) {
+    buildSuccessesByProject.put(getProjectKey(project),
+                                new BuildSuccess(project, time));
+  }
 
-    public boolean hasBuildFailure( MavenProject project )
-    {
-        return buildFailuresByProject.containsKey( getProjectKey( project ) );
-    }
+  public BuildFailure getBuildFailure(MavenProject project) {
+    return buildFailuresByProject.get(getProjectKey(project));
+  }
 
-    public boolean hasMultipleProjects()
-    {
-        return sorter.hasMultipleProjects();
-    }
+  public BuildSuccess getBuildSuccess(MavenProject project) {
+    return buildSuccessesByProject.get(getProjectKey(project));
+  }
 
-    public List<MavenProject> getSortedProjects()
-    {
-        return sorter.getSortedProjects();
-    }
-
-    public boolean hasBuildSuccess( MavenProject project )
-    {
-        return buildSuccessesByProject.containsKey( getProjectKey( project ) );
-    }
-
-    public void registerBuildSuccess( MavenProject project, long time )
-    {
-        buildSuccessesByProject.put( getProjectKey( project ), new BuildSuccess( project, time ) );
-    }
-
-    public BuildFailure getBuildFailure( MavenProject project )
-    {
-        return buildFailuresByProject.get( getProjectKey( project ) );
-    }
-
-    public BuildSuccess getBuildSuccess( MavenProject project )
-    {
-        return buildSuccessesByProject.get( getProjectKey( project ) );
-    }
-
-    public boolean executedMultipleProjects()
-    {
-        return buildFailuresByProject.size() + buildSuccessesByProject.size() > 1;
-    }
+  public boolean executedMultipleProjects() {
+    return buildFailuresByProject.size() + buildSuccessesByProject.size() > 1;
+  }
 }

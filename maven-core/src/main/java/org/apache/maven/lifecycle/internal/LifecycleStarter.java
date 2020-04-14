@@ -21,11 +21,9 @@ package org.apache.maven.lifecycle.internal;
 
 import java.util.List;
 import java.util.Map;
-
 import javax.inject.Inject;
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.execution.ExecutionEvent;
 import org.apache.maven.execution.MavenExecutionResult;
 import org.apache.maven.execution.MavenSession;
@@ -46,108 +44,101 @@ import org.codehaus.plexus.logging.Logger;
  */
 @Named
 @Singleton
-public class LifecycleStarter
-{
-    @Inject
-    private ExecutionEventCatapult eventCatapult;
+public class LifecycleStarter {
+  @Inject private ExecutionEventCatapult eventCatapult;
 
-    @Inject
-    private DefaultLifecycles defaultLifeCycles;
+  @Inject private DefaultLifecycles defaultLifeCycles;
 
-    @Inject
-    private Logger logger;
+  @Inject private Logger logger;
 
-    @Inject
-    private BuildListCalculator buildListCalculator;
+  @Inject private BuildListCalculator buildListCalculator;
 
-    @Inject
-    private LifecycleDebugLogger lifecycleDebugLogger;
+  @Inject private LifecycleDebugLogger lifecycleDebugLogger;
 
-    @Inject
-    private LifecycleTaskSegmentCalculator lifecycleTaskSegmentCalculator;
+  @Inject private LifecycleTaskSegmentCalculator lifecycleTaskSegmentCalculator;
 
-    @Inject
-    private Map<String, Builder> builders;
-    
-    @Inject
-    private SessionScope sessionScope;
+  @Inject private Map<String, Builder> builders;
 
-    public void execute( MavenSession session )
-    {
-        eventCatapult.fire( ExecutionEvent.Type.SessionStarted, session, null );
+  @Inject private SessionScope sessionScope;
 
-        ReactorContext reactorContext = null;
-        ProjectBuildList projectBuilds = null;
-        MavenExecutionResult result = session.getResult();
+  public void execute(MavenSession session) {
+    eventCatapult.fire(ExecutionEvent.Type.SessionStarted, session, null);
 
-        try
-        {
-            if ( buildExecutionRequiresProject( session ) && projectIsNotPresent( session ) )
-            {
-                throw new MissingProjectException( "The goal you specified requires a project to execute"
-                    + " but there is no POM in this directory (" + session.getExecutionRootDirectory() + ")."
-                    + " Please verify you invoked Maven from the correct directory." );
-            }
+    ReactorContext reactorContext = null;
+    ProjectBuildList projectBuilds = null;
+    MavenExecutionResult result = session.getResult();
 
-            List<TaskSegment> taskSegments = lifecycleTaskSegmentCalculator.calculateTaskSegments( session );
-            projectBuilds = buildListCalculator.calculateProjectBuilds( session, taskSegments );
+    try {
+      if (buildExecutionRequiresProject(session) &&
+          projectIsNotPresent(session)) {
+        throw new MissingProjectException(
+            "The goal you specified requires a project to execute"
+            + " but there is no POM in this directory (" +
+            session.getExecutionRootDirectory() + ")."
+            + " Please verify you invoked Maven from the correct directory.");
+      }
 
-            if ( projectBuilds.isEmpty() )
-            {
-                throw new NoGoalSpecifiedException( "No goals have been specified for this build."
-                    + " You must specify a valid lifecycle phase or a goal in the format <plugin-prefix>:<goal> or"
-                    + " <plugin-group-id>:<plugin-artifact-id>[:<plugin-version>]:<goal>."
-                    + " Available lifecycle phases are: " + defaultLifeCycles.getLifecyclePhaseList() + "." );
-            }
+      List<TaskSegment> taskSegments =
+          lifecycleTaskSegmentCalculator.calculateTaskSegments(session);
+      projectBuilds =
+          buildListCalculator.calculateProjectBuilds(session, taskSegments);
 
-            ProjectIndex projectIndex = new ProjectIndex( session.getProjects() );
+      if (projectBuilds.isEmpty()) {
+        throw new NoGoalSpecifiedException(
+            "No goals have been specified for this build."
+            +
+            " You must specify a valid lifecycle phase or a goal in the format <plugin-prefix>:<goal> or"
+            +
+            " <plugin-group-id>:<plugin-artifact-id>[:<plugin-version>]:<goal>."
+            + " Available lifecycle phases are: " +
+            defaultLifeCycles.getLifecyclePhaseList() + ".");
+      }
 
-            if ( logger.isDebugEnabled() )
-            {
-                lifecycleDebugLogger.debugReactorPlan( projectBuilds );
-            }
+      ProjectIndex projectIndex = new ProjectIndex(session.getProjects());
 
-            ClassLoader oldContextClassLoader = Thread.currentThread().getContextClassLoader();
-            ReactorBuildStatus reactorBuildStatus = new ReactorBuildStatus( session.getProjectDependencyGraph() );
-            reactorContext =
-                new ReactorContext( result, projectIndex, oldContextClassLoader, reactorBuildStatus,
-                                    sessionScope.memento() );
+      if (logger.isDebugEnabled()) {
+        lifecycleDebugLogger.debugReactorPlan(projectBuilds);
+      }
 
-            String builderId = session.getRequest().getBuilderId();
-            Builder builder = builders.get( builderId );
-            if ( builder == null )
-            {
-                throw new BuilderNotFoundException( String.format( "The builder requested using id = %s cannot be"
-                    + " found", builderId ) );
-            }
+      ClassLoader oldContextClassLoader =
+          Thread.currentThread().getContextClassLoader();
+      ReactorBuildStatus reactorBuildStatus =
+          new ReactorBuildStatus(session.getProjectDependencyGraph());
+      reactorContext =
+          new ReactorContext(result, projectIndex, oldContextClassLoader,
+                             reactorBuildStatus, sessionScope.memento());
 
-            int degreeOfConcurrency = session.getRequest().getDegreeOfConcurrency();
-            if ( degreeOfConcurrency >= 2 )
-            {
-                logger.info( "" );
-                logger.info( String.format( "Using the %s implementation with a thread count of %d",
-                                            builder.getClass().getSimpleName(), degreeOfConcurrency ) );
-            }
-            builder.build( session, reactorContext, projectBuilds, taskSegments, reactorBuildStatus );
+      String builderId = session.getRequest().getBuilderId();
+      Builder builder = builders.get(builderId);
+      if (builder == null) {
+        throw new BuilderNotFoundException(
+            String.format("The builder requested using id = %s cannot be"
+                              + " found",
+                          builderId));
+      }
 
-        }
-        catch ( Exception e )
-        {
-            result.addException( e );
-        }
-        finally
-        {
-            eventCatapult.fire( ExecutionEvent.Type.SessionEnded, session, null );
-        }
+      int degreeOfConcurrency = session.getRequest().getDegreeOfConcurrency();
+      if (degreeOfConcurrency >= 2) {
+        logger.info("");
+        logger.info(String.format(
+            "Using the %s implementation with a thread count of %d",
+            builder.getClass().getSimpleName(), degreeOfConcurrency));
+      }
+      builder.build(session, reactorContext, projectBuilds, taskSegments,
+                    reactorBuildStatus);
+
+    } catch (Exception e) {
+      result.addException(e);
+    } finally {
+      eventCatapult.fire(ExecutionEvent.Type.SessionEnded, session, null);
     }
+  }
 
-    private boolean buildExecutionRequiresProject( MavenSession session )
-    {
-        return lifecycleTaskSegmentCalculator.requiresProject( session );
-    }
+  private boolean buildExecutionRequiresProject(MavenSession session) {
+    return lifecycleTaskSegmentCalculator.requiresProject(session);
+  }
 
-    private boolean projectIsNotPresent( MavenSession session )
-    {
-        return !session.getRequest().isProjectPresent();
-    }
+  private boolean projectIsNotPresent(MavenSession session) {
+    return !session.getRequest().isProjectPresent();
+  }
 }

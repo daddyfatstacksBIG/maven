@@ -19,6 +19,7 @@ package org.apache.maven.repository.legacy.resolver.conflict;
  * under the License.
  */
 
+import java.util.Collections;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.factory.ArtifactFactory;
 import org.apache.maven.artifact.repository.ArtifactRepository;
@@ -30,124 +31,116 @@ import org.codehaus.plexus.ContainerConfiguration;
 import org.codehaus.plexus.PlexusConstants;
 import org.codehaus.plexus.PlexusTestCase;
 
-import java.util.Collections;
-
 /**
  * Provides a basis for testing conflict resolvers.
  *
  * @author <a href="mailto:markhobson@gmail.com">Mark Hobson</a>
  */
-public abstract class AbstractConflictResolverTest
-    extends PlexusTestCase
-{
-    // constants --------------------------------------------------------------
+public abstract class AbstractConflictResolverTest extends PlexusTestCase {
+  // constants --------------------------------------------------------------
 
-    private static final String GROUP_ID = "test";
+  private static final String GROUP_ID = "test";
 
-    // fields -----------------------------------------------------------------
+  // fields -----------------------------------------------------------------
 
-    protected Artifact a1;
+  protected Artifact a1;
 
-    protected Artifact a2;
+  protected Artifact a2;
 
-    protected Artifact b1;
+  protected Artifact b1;
 
-    private final String roleHint;
+  private final String roleHint;
 
-    private ArtifactFactory artifactFactory;
+  private ArtifactFactory artifactFactory;
 
-    private ConflictResolver conflictResolver;
+  private ConflictResolver conflictResolver;
 
-    // constructors -----------------------------------------------------------
+  // constructors -----------------------------------------------------------
 
-    public AbstractConflictResolverTest( String roleHint )
-        throws Exception
-    {
-        this.roleHint = roleHint;
-    }
+  public AbstractConflictResolverTest(String roleHint) throws Exception {
+    this.roleHint = roleHint;
+  }
 
-    // TestCase methods -------------------------------------------------------
+  // TestCase methods -------------------------------------------------------
 
-    @Override
-    protected void customizeContainerConfiguration( ContainerConfiguration containerConfiguration )
-    {
-        super.customizeContainerConfiguration( containerConfiguration );
-        containerConfiguration.setAutoWiring( true );
-        containerConfiguration.setClassPathScanning( PlexusConstants.SCANNING_INDEX );
-    }
+  @Override
+  protected void customizeContainerConfiguration(
+      ContainerConfiguration containerConfiguration) {
+    super.customizeContainerConfiguration(containerConfiguration);
+    containerConfiguration.setAutoWiring(true);
+    containerConfiguration.setClassPathScanning(PlexusConstants.SCANNING_INDEX);
+  }
 
-    /*
-     * @see junit.framework.TestCase#setUp()
-     */
-    protected void setUp() throws Exception
-    {
-        super.setUp();
+  /*
+   * @see junit.framework.TestCase#setUp()
+   */
+  protected void setUp() throws Exception {
+    super.setUp();
 
-        artifactFactory = (ArtifactFactory) lookup( ArtifactFactory.ROLE );
-        conflictResolver = (ConflictResolver) lookup( ConflictResolver.ROLE, roleHint );
+    artifactFactory = (ArtifactFactory)lookup(ArtifactFactory.ROLE);
+    conflictResolver =
+        (ConflictResolver)lookup(ConflictResolver.ROLE, roleHint);
 
-        a1 = createArtifact( "a", "1.0" );
-        a2 = createArtifact( "a", "2.0" );
-        b1 = createArtifact( "b", "1.0" );
-    }
+    a1 = createArtifact("a", "1.0");
+    a2 = createArtifact("a", "2.0");
+    b1 = createArtifact("b", "1.0");
+  }
 
-    /*
-     * @see org.codehaus.plexus.PlexusTestCase#tearDown()
-     */
-    protected void tearDown() throws Exception
-    {
-        a1 = null;
-        a2 = null;
-        b1 = null;
+  /*
+   * @see org.codehaus.plexus.PlexusTestCase#tearDown()
+   */
+  protected void tearDown() throws Exception {
+    a1 = null;
+    a2 = null;
+    b1 = null;
 
-        artifactFactory = null;
-        conflictResolver = null;
+    artifactFactory = null;
+    conflictResolver = null;
 
-        super.tearDown();
-    }
+    super.tearDown();
+  }
 
-    // protected methods ------------------------------------------------------
+  // protected methods ------------------------------------------------------
 
-    protected ConflictResolver getConflictResolver()
-    {
-        return conflictResolver;
-    }
+  protected ConflictResolver getConflictResolver() { return conflictResolver; }
 
-    protected void assertResolveConflict( ResolutionNode expectedNode, ResolutionNode actualNode1, ResolutionNode actualNode2 )
-    {
-        ResolutionNode resolvedNode = getConflictResolver().resolveConflict( actualNode1, actualNode2 );
+  protected void assertResolveConflict(ResolutionNode expectedNode,
+                                       ResolutionNode actualNode1,
+                                       ResolutionNode actualNode2) {
+    ResolutionNode resolvedNode =
+        getConflictResolver().resolveConflict(actualNode1, actualNode2);
 
-        assertNotNull( "Expected resolvable", resolvedNode );
-        assertEquals( "Resolution node", expectedNode, resolvedNode );
-    }
+    assertNotNull("Expected resolvable", resolvedNode);
+    assertEquals("Resolution node", expectedNode, resolvedNode);
+  }
 
-    protected Artifact createArtifact( String id, String version ) throws InvalidVersionSpecificationException
-    {
-        return createArtifact( id, version, Artifact.SCOPE_COMPILE );
-    }
+  protected Artifact createArtifact(String id, String version)
+      throws InvalidVersionSpecificationException {
+    return createArtifact(id, version, Artifact.SCOPE_COMPILE);
+  }
 
-    protected Artifact createArtifact( String id, String version, String scope )
-        throws InvalidVersionSpecificationException
-    {
-        return createArtifact( id, version, scope, null, false );
-    }
+  protected Artifact createArtifact(String id, String version, String scope)
+      throws InvalidVersionSpecificationException {
+    return createArtifact(id, version, scope, null, false);
+  }
 
-    protected Artifact createArtifact( String id, String version, String scope, String inheritedScope, boolean optional )
-        throws InvalidVersionSpecificationException
-    {
-        VersionRange versionRange = VersionRange.createFromVersionSpec( version );
+  protected Artifact createArtifact(String id, String version, String scope,
+                                    String inheritedScope, boolean optional)
+      throws InvalidVersionSpecificationException {
+    VersionRange versionRange = VersionRange.createFromVersionSpec(version);
 
-        return artifactFactory.createDependencyArtifact( GROUP_ID, id, versionRange, "jar", null, scope,
-                                                         inheritedScope, optional );
-    }
+    return artifactFactory.createDependencyArtifact(GROUP_ID, id, versionRange,
+                                                    "jar", null, scope,
+                                                    inheritedScope, optional);
+  }
 
-    protected ResolutionNode createResolutionNode( Artifact Artifact )
-    {
-        return new ResolutionNode( Artifact, Collections.<ArtifactRepository>emptyList() );
-    }
-    protected ResolutionNode createResolutionNode( Artifact Artifact, ResolutionNode parent )
-    {
-        return new ResolutionNode( Artifact, Collections.<ArtifactRepository>emptyList(), parent );
-    }
-
+  protected ResolutionNode createResolutionNode(Artifact Artifact) {
+    return new ResolutionNode(Artifact,
+                              Collections.<ArtifactRepository>emptyList());
+  }
+  protected ResolutionNode createResolutionNode(Artifact Artifact,
+                                                ResolutionNode parent) {
+    return new ResolutionNode(
+        Artifact, Collections.<ArtifactRepository>emptyList(), parent);
+  }
 }

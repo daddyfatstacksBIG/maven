@@ -22,52 +22,64 @@ package org.apache.maven.toolchain.building;
 import static org.junit.Assert.assertEquals;
 
 import java.util.Collections;
-
 import org.apache.maven.building.Problem;
 import org.apache.maven.building.ProblemCollector;
 import org.apache.maven.building.ProblemCollectorFactory;
 import org.junit.Test;
 
-public class ToolchainsBuildingExceptionTest
-{
-    private static final String LS = System.lineSeparator();
+public class ToolchainsBuildingExceptionTest {
+  private static final String LS = System.lineSeparator();
 
-    @Test
-    public void testNoProblems()
-    {
-        ToolchainsBuildingException e = new ToolchainsBuildingException( Collections.<Problem>emptyList() );
-        assertEquals( "0 problems were encountered while building the effective toolchains" + LS, e.getMessage() );
-    }
+  @Test
+  public void testNoProblems() {
+    ToolchainsBuildingException e =
+        new ToolchainsBuildingException(Collections.<Problem>emptyList());
+    assertEquals(
+        "0 problems were encountered while building the effective toolchains" +
+            LS,
+        e.getMessage());
+  }
 
-    @Test
-    public void testOneProblem()
-    {
-        ProblemCollector problemCollector = ProblemCollectorFactory.newInstance( null );
-        problemCollector.add( Problem.Severity.ERROR, "MESSAGE", 3, 5, new Exception() );
-        ToolchainsBuildingException e = new ToolchainsBuildingException( problemCollector.getProblems() );
-        assertEquals( "1 problem was encountered while building the effective toolchains" + LS +
-                      "[ERROR] MESSAGE @ line 3, column 5" + LS, e.getMessage() );
-    }
+  @Test
+  public void testOneProblem() {
+    ProblemCollector problemCollector =
+        ProblemCollectorFactory.newInstance(null);
+    problemCollector.add(Problem.Severity.ERROR, "MESSAGE", 3, 5,
+                         new Exception());
+    ToolchainsBuildingException e =
+        new ToolchainsBuildingException(problemCollector.getProblems());
+    assertEquals(
+        "1 problem was encountered while building the effective toolchains" +
+            LS + "[ERROR] MESSAGE @ line 3, column 5" + LS,
+        e.getMessage());
+  }
 
-    @Test
-    public void testUnknownPositionAndSource()
-    {
-        ProblemCollector problemCollector = ProblemCollectorFactory.newInstance( null );
-        problemCollector.add( Problem.Severity.ERROR, "MESSAGE", -1, -1, new Exception() );
-        ToolchainsBuildingException e = new ToolchainsBuildingException( problemCollector.getProblems() );
-        assertEquals( "1 problem was encountered while building the effective toolchains" + LS +
-                      "[ERROR] MESSAGE" + LS, e.getMessage() );
-    }
+  @Test
+  public void testUnknownPositionAndSource() {
+    ProblemCollector problemCollector =
+        ProblemCollectorFactory.newInstance(null);
+    problemCollector.add(Problem.Severity.ERROR, "MESSAGE", -1, -1,
+                         new Exception());
+    ToolchainsBuildingException e =
+        new ToolchainsBuildingException(problemCollector.getProblems());
+    assertEquals(
+        "1 problem was encountered while building the effective toolchains" +
+            LS + "[ERROR] MESSAGE" + LS,
+        e.getMessage());
+  }
 
-    @Test
-    public void testUnknownPosition()
-    {
-        ProblemCollector problemCollector = ProblemCollectorFactory.newInstance( null );
-        problemCollector.setSource( "SOURCE" );
-        problemCollector.add( Problem.Severity.ERROR, "MESSAGE", -1, -1, new Exception() );
-        ToolchainsBuildingException e = new ToolchainsBuildingException( problemCollector.getProblems() );
-        assertEquals( "1 problem was encountered while building the effective toolchains" + LS +
-                      "[ERROR] MESSAGE @ SOURCE" + LS, e.getMessage() );
-    }
-
+  @Test
+  public void testUnknownPosition() {
+    ProblemCollector problemCollector =
+        ProblemCollectorFactory.newInstance(null);
+    problemCollector.setSource("SOURCE");
+    problemCollector.add(Problem.Severity.ERROR, "MESSAGE", -1, -1,
+                         new Exception());
+    ToolchainsBuildingException e =
+        new ToolchainsBuildingException(problemCollector.getProblems());
+    assertEquals(
+        "1 problem was encountered while building the effective toolchains" +
+            LS + "[ERROR] MESSAGE @ SOURCE" + LS,
+        e.getMessage());
+  }
 }

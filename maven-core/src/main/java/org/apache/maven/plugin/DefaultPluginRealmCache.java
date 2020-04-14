@@ -25,10 +25,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.RepositoryUtils;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.model.Plugin;
@@ -47,170 +45,147 @@ import org.eclipse.aether.repository.WorkspaceRepository;
  */
 @Named
 @Singleton
-public class DefaultPluginRealmCache
-    implements PluginRealmCache, Disposable
-{
-    /**
-     * CacheKey
-     */
-    protected static class CacheKey
-        implements Key
-    {
+public class DefaultPluginRealmCache implements PluginRealmCache, Disposable {
+  /**
+   * CacheKey
+   */
+  protected static class CacheKey implements Key {
 
-        private final Plugin plugin;
+    private final Plugin plugin;
 
-        private final WorkspaceRepository workspace;
+    private final WorkspaceRepository workspace;
 
-        private final LocalRepository localRepo;
+    private final LocalRepository localRepo;
 
-        private final List<RemoteRepository> repositories;
+    private final List<RemoteRepository> repositories;
 
-        private final ClassLoader parentRealm;
+    private final ClassLoader parentRealm;
 
-        private final Map<String, ClassLoader> foreignImports;
+    private final Map<String, ClassLoader> foreignImports;
 
-        private final DependencyFilter filter;
+    private final DependencyFilter filter;
 
-        private final int hashCode;
+    private final int hashCode;
 
-        public CacheKey( Plugin plugin, ClassLoader parentRealm, Map<String, ClassLoader> foreignImports,
-                         DependencyFilter dependencyFilter, List<RemoteRepository> repositories,
-                         RepositorySystemSession session )
-        {
-            this.plugin = plugin.clone();
-            this.workspace = RepositoryUtils.getWorkspace( session );
-            this.localRepo = session.getLocalRepository();
-            this.repositories = new ArrayList<>( repositories.size() );
-            for ( RemoteRepository repository : repositories )
-            {
-                if ( repository.isRepositoryManager() )
-                {
-                    this.repositories.addAll( repository.getMirroredRepositories() );
-                }
-                else
-                {
-                    this.repositories.add( repository );
-                }
-            }
-            this.parentRealm = parentRealm;
-            this.foreignImports =
-                ( foreignImports != null ) ? foreignImports : Collections.<String, ClassLoader>emptyMap();
-            this.filter = dependencyFilter;
-
-            int hash = 17;
-            hash = hash * 31 + CacheUtils.pluginHashCode( plugin );
-            hash = hash * 31 + Objects.hashCode( workspace );
-            hash = hash * 31 + Objects.hashCode( localRepo );
-            hash = hash * 31 + RepositoryUtils.repositoriesHashCode( repositories );
-            hash = hash * 31 + Objects.hashCode( parentRealm );
-            hash = hash * 31 + this.foreignImports.hashCode();
-            hash = hash * 31 + Objects.hashCode( dependencyFilter );
-            this.hashCode = hash;
+    public CacheKey(Plugin plugin, ClassLoader parentRealm,
+                    Map<String, ClassLoader> foreignImports,
+                    DependencyFilter dependencyFilter,
+                    List<RemoteRepository> repositories,
+                    RepositorySystemSession session) {
+      this.plugin = plugin.clone();
+      this.workspace = RepositoryUtils.getWorkspace(session);
+      this.localRepo = session.getLocalRepository();
+      this.repositories = new ArrayList<>(repositories.size());
+      for (RemoteRepository repository : repositories) {
+        if (repository.isRepositoryManager()) {
+          this.repositories.addAll(repository.getMirroredRepositories());
+        } else {
+          this.repositories.add(repository);
         }
+      }
+      this.parentRealm = parentRealm;
+      this.foreignImports = (foreignImports != null)
+                                ? foreignImports
+                                : Collections.<String, ClassLoader>emptyMap();
+      this.filter = dependencyFilter;
 
-        @Override
-        public String toString()
-        {
-            return plugin.getId();
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return hashCode;
-        }
-
-        @Override
-        public boolean equals( Object o )
-        {
-            if ( o == this )
-            {
-                return true;
-            }
-
-            if ( !( o instanceof CacheKey ) )
-            {
-                return false;
-            }
-
-            CacheKey that = (CacheKey) o;
-
-            return parentRealm == that.parentRealm 
-                && CacheUtils.pluginEquals( plugin, that.plugin )
-                && Objects.equals( workspace, that.workspace ) 
-                && Objects.equals( localRepo, that.localRepo )
-                && RepositoryUtils.repositoriesEquals( this.repositories, that.repositories ) 
-                && Objects.equals( filter, that.filter )
-                && Objects.equals( foreignImports, that.foreignImports );
-        }
+      int hash = 17;
+      hash = hash * 31 + CacheUtils.pluginHashCode(plugin);
+      hash = hash * 31 + Objects.hashCode(workspace);
+      hash = hash * 31 + Objects.hashCode(localRepo);
+      hash = hash * 31 + RepositoryUtils.repositoriesHashCode(repositories);
+      hash = hash * 31 + Objects.hashCode(parentRealm);
+      hash = hash * 31 + this.foreignImports.hashCode();
+      hash = hash * 31 + Objects.hashCode(dependencyFilter);
+      this.hashCode = hash;
     }
 
-    protected final Map<Key, CacheRecord> cache = new ConcurrentHashMap<>();
-
-    public Key createKey( Plugin plugin, ClassLoader parentRealm, Map<String, ClassLoader> foreignImports,
-                          DependencyFilter dependencyFilter, List<RemoteRepository> repositories,
-                          RepositorySystemSession session )
-    {
-        return new CacheKey( plugin, parentRealm, foreignImports, dependencyFilter, repositories, session );
+    @Override
+    public String toString() {
+      return plugin.getId();
     }
 
-    public CacheRecord get( Key key )
-    {
-        return cache.get( key );
+    @Override
+    public int hashCode() {
+      return hashCode;
     }
 
-    public CacheRecord put( Key key, ClassRealm pluginRealm, List<Artifact> pluginArtifacts )
-    {
-        Objects.requireNonNull( pluginRealm, "pluginRealm cannot be null" );
-        Objects.requireNonNull( pluginArtifacts, "pluginArtifacts cannot be null" );
+    @Override
+    public boolean equals(Object o) {
+      if (o == this) {
+        return true;
+      }
 
-        if ( cache.containsKey( key ) )
-        {
-            throw new IllegalStateException( "Duplicate plugin realm for plugin " + key );
-        }
+      if (!(o instanceof CacheKey)) {
+        return false;
+      }
 
-        CacheRecord record = new CacheRecord( pluginRealm, pluginArtifacts );
+      CacheKey that = (CacheKey)o;
 
-        cache.put( key, record );
+      return parentRealm == that.parentRealm &&
+          CacheUtils.pluginEquals(plugin, that.plugin) &&
+          Objects.equals(workspace, that.workspace) &&
+          Objects.equals(localRepo, that.localRepo) &&
+          RepositoryUtils.repositoriesEquals(this.repositories,
+                                             that.repositories) &&
+          Objects.equals(filter, that.filter) &&
+          Objects.equals(foreignImports, that.foreignImports);
+    }
+  }
 
-        return record;
+  protected final Map<Key, CacheRecord> cache = new ConcurrentHashMap<>();
+
+  public Key createKey(Plugin plugin, ClassLoader parentRealm,
+                       Map<String, ClassLoader> foreignImports,
+                       DependencyFilter dependencyFilter,
+                       List<RemoteRepository> repositories,
+                       RepositorySystemSession session) {
+    return new CacheKey(plugin, parentRealm, foreignImports, dependencyFilter,
+                        repositories, session);
+  }
+
+  public CacheRecord get(Key key) { return cache.get(key); }
+
+  public CacheRecord put(Key key, ClassRealm pluginRealm,
+                         List<Artifact> pluginArtifacts) {
+    Objects.requireNonNull(pluginRealm, "pluginRealm cannot be null");
+    Objects.requireNonNull(pluginArtifacts, "pluginArtifacts cannot be null");
+
+    if (cache.containsKey(key)) {
+      throw new IllegalStateException("Duplicate plugin realm for plugin " +
+                                      key);
     }
 
-    public void flush()
-    {
-        for ( CacheRecord record : cache.values() )
-        {
-            ClassRealm realm = record.getRealm();
-            try
-            {
-                realm.getWorld().disposeRealm( realm.getId() );
-            }
-            catch ( NoSuchRealmException e )
-            {
-                // ignore
-            }
-        }
-        cache.clear();
-    }
+    CacheRecord record = new CacheRecord(pluginRealm, pluginArtifacts);
 
-    protected static int pluginHashCode( Plugin plugin )
-    {
-        return CacheUtils.pluginHashCode( plugin );
-    }
+    cache.put(key, record);
 
-    protected static boolean pluginEquals( Plugin a, Plugin b )
-    {
-        return CacheUtils.pluginEquals( a, b );
-    }
+    return record;
+  }
 
-    public void register( MavenProject project, Key key, CacheRecord record )
-    {
-        // default cache does not track plugin usage
+  public void flush() {
+    for (CacheRecord record : cache.values()) {
+      ClassRealm realm = record.getRealm();
+      try {
+        realm.getWorld().disposeRealm(realm.getId());
+      } catch (NoSuchRealmException e) {
+        // ignore
+      }
     }
+    cache.clear();
+  }
 
-    public void dispose()
-    {
-        flush();
-    }
+  protected static int pluginHashCode(Plugin plugin) {
+    return CacheUtils.pluginHashCode(plugin);
+  }
 
+  protected static boolean pluginEquals(Plugin a, Plugin b) {
+    return CacheUtils.pluginEquals(a, b);
+  }
+
+  public void register(MavenProject project, Key key, CacheRecord record) {
+    // default cache does not track plugin usage
+  }
+
+  public void dispose() { flush(); }
 }

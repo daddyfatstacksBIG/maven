@@ -30,78 +30,64 @@ import java.util.Objects;
  *
  * @author Benjamin Bentmann
  */
-public class FileSource
-    implements Source
-{
-    private final File file;
+public class FileSource implements Source {
+  private final File file;
 
-    private final int hashCode; 
+  private final int hashCode;
 
-    /**
-     * Creates a new source backed by the specified file.
-     *
-     * @param file The file, must not be {@code null}.
-     */
-    public FileSource( File file )
-    {
-        this.file = Objects.requireNonNull( file, "file cannot be null" ).getAbsoluteFile();
-        this.hashCode = Objects.hash( file );
+  /**
+   * Creates a new source backed by the specified file.
+   *
+   * @param file The file, must not be {@code null}.
+   */
+  public FileSource(File file) {
+    this.file =
+        Objects.requireNonNull(file, "file cannot be null").getAbsoluteFile();
+    this.hashCode = Objects.hash(file);
+  }
+
+  @Override
+  public InputStream getInputStream() throws IOException {
+    return new FileInputStream(file);
+  }
+
+  @Override
+  public String getLocation() {
+    return file.getPath();
+  }
+
+  /**
+   * Gets the file of this source.
+   *
+   * @return The underlying file, never {@code null}.
+   */
+  public File getFile() { return file; }
+
+  @Override
+  public String toString() {
+    return getLocation();
+  }
+
+  @Override
+  public int hashCode() {
+    return hashCode;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
     }
 
-    @Override
-    public InputStream getInputStream()
-        throws IOException
-    {
-        return new FileInputStream( file );
+    if (obj == null) {
+      return false;
     }
 
-    @Override
-    public String getLocation()
-    {
-        return file.getPath();
+    if (!FileSource.class.equals(obj.getClass())) {
+      return false;
     }
 
-    /**
-     * Gets the file of this source.
-     *
-     * @return The underlying file, never {@code null}.
-     */
-    public File getFile()
-    {
-        return file;
-    }
-
-    @Override
-    public String toString()
-    {
-        return getLocation();
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return hashCode;
-    }
-
-    @Override
-    public boolean equals( Object obj )
-    {
-        if ( this == obj )
-        {
-            return true;
-        }
-
-        if ( obj == null )
-        {
-            return false;
-        }
-
-        if ( !FileSource.class.equals( obj.getClass() ) )
-        {
-            return false;
-        }
-
-        FileSource other = (FileSource) obj;
-        return this.file.equals( other.file );
-    }
+    FileSource other = (FileSource)obj;
+    return this.file.equals(other.file);
+  }
 }

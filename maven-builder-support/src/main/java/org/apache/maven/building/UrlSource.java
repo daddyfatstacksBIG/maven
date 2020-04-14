@@ -29,79 +29,64 @@ import java.util.Objects;
  *
  * @author Benjamin Bentmann
  */
-public class UrlSource
-    implements Source
-{
+public class UrlSource implements Source {
 
-    private final URL url;
+  private final URL url;
 
-    private final int hashCode;
+  private final int hashCode;
 
-    /**
-     * Creates a new source backed by the specified URL.
-     *
-     * @param url The file, must not be {@code null}.
-     */
-    public UrlSource( URL url )
-    {
-        this.url = Objects.requireNonNull( url, "url cannot be null" );
-        this.hashCode = Objects.hashCode( url );
+  /**
+   * Creates a new source backed by the specified URL.
+   *
+   * @param url The file, must not be {@code null}.
+   */
+  public UrlSource(URL url) {
+    this.url = Objects.requireNonNull(url, "url cannot be null");
+    this.hashCode = Objects.hashCode(url);
+  }
+
+  @Override
+  public InputStream getInputStream() throws IOException {
+    return url.openStream();
+  }
+
+  @Override
+  public String getLocation() {
+    return url.toString();
+  }
+
+  /**
+   * Gets the URL of this source.
+   *
+   * @return The underlying URL, never {@code null}.
+   */
+  public URL getUrl() { return url; }
+
+  @Override
+  public String toString() {
+    return getLocation();
+  }
+
+  @Override
+  public int hashCode() {
+    return hashCode;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
     }
 
-    @Override
-    public InputStream getInputStream()
-        throws IOException
-    {
-        return url.openStream();
+    if (obj == null) {
+      return false;
     }
 
-    @Override
-    public String getLocation()
-    {
-        return url.toString();
+    if (!UrlSource.class.equals(obj.getClass())) {
+      return false;
     }
 
-    /**
-     * Gets the URL of this source.
-     *
-     * @return The underlying URL, never {@code null}.
-     */
-    public URL getUrl()
-    {
-        return url;
-    }
-
-    @Override
-    public String toString()
-    {
-        return getLocation();
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return hashCode;
-    }
-
-    @Override
-    public boolean equals( Object obj )
-    {
-        if ( this == obj )
-        {
-            return true;
-        }
-
-        if ( obj == null )
-        {
-            return false;
-        }
-
-        if ( !UrlSource.class.equals( obj.getClass() ) )
-        {
-            return false;
-        }
-
-        UrlSource other = (UrlSource) obj;
-        return this.url.equals( other.url );
-    }
+    UrlSource other = (UrlSource)obj;
+    return this.url.equals(other.url);
+  }
 }

@@ -28,37 +28,32 @@ import java.util.List;
  * @author Benjamin Bentmann
  * @author Robert Scholte
  */
-class DefaultProblemCollector
-    implements ProblemCollector
-{
+class DefaultProblemCollector implements ProblemCollector {
 
-    private List<Problem> problems;
+  private List<Problem> problems;
 
-    private String source;
+  private String source;
 
-    DefaultProblemCollector( List<Problem> problems )
-    {
-        this.problems = ( problems != null ) ? problems : new ArrayList<>();
-    }
+  DefaultProblemCollector(List<Problem> problems) {
+    this.problems = (problems != null) ? problems : new ArrayList<>();
+  }
 
-    @Override
-    public List<Problem> getProblems()
-    {
-        return problems;
-    }
+  @Override
+  public List<Problem> getProblems() {
+    return problems;
+  }
 
-    @Override
-    public void setSource( String source )
-    {
-        this.source = source;
-    }
+  @Override
+  public void setSource(String source) {
+    this.source = source;
+  }
 
-    @Override
-    public void add( Problem.Severity severity, String message, int line, int column, Exception cause )
-    {
-        Problem problem = new DefaultProblem( message, severity, source, line, column, cause );
+  @Override
+  public void add(Problem.Severity severity, String message, int line,
+                  int column, Exception cause) {
+    Problem problem =
+        new DefaultProblem(message, severity, source, line, column, cause);
 
-        problems.add( problem );
-    }
-
+    problems.add(problem);
+  }
 }

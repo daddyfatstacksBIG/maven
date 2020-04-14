@@ -30,11 +30,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-
 import javax.inject.Inject;
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.artifact.ArtifactUtils;
 import org.apache.maven.execution.DefaultMavenExecutionResult;
 import org.apache.maven.execution.ExecutionEvent;
@@ -67,475 +65,426 @@ import org.eclipse.aether.util.repository.ChainedWorkspaceReader;
  */
 @Named
 @Singleton
-public class DefaultMaven
-    implements Maven
-{
+public class DefaultMaven implements Maven {
 
-    @Inject
-    private Logger logger;
+  @Inject private Logger logger;
 
-    @Inject
-    protected ProjectBuilder projectBuilder;
+  @Inject protected ProjectBuilder projectBuilder;
 
-    @Inject
-    private LifecycleStarter lifecycleStarter;
+  @Inject private LifecycleStarter lifecycleStarter;
 
-    @Inject
-    protected PlexusContainer container;
+  @Inject protected PlexusContainer container;
 
-    @Inject
-    private ExecutionEventCatapult eventCatapult;
+  @Inject private ExecutionEventCatapult eventCatapult;
 
-    @Inject
-    private LegacySupport legacySupport;
+  @Inject private LegacySupport legacySupport;
 
-    @Inject
-    private SessionScope sessionScope;
+  @Inject private SessionScope sessionScope;
 
-    @Inject
-    private DefaultRepositorySystemSessionFactory repositorySessionFactory;
+  @Inject
+  private DefaultRepositorySystemSessionFactory repositorySessionFactory;
 
-    @Inject
-    @Named( GraphBuilder.HINT )
-    private GraphBuilder graphBuilder;
+  @Inject @Named(GraphBuilder.HINT) private GraphBuilder graphBuilder;
 
-    @Override
-    public MavenExecutionResult execute( MavenExecutionRequest request )
-    {
-        MavenExecutionResult result;
+  @Override
+  public MavenExecutionResult execute(MavenExecutionRequest request) {
+    MavenExecutionResult result;
 
-        try
-        {
-            result = doExecute( request );
-        }
-        catch ( OutOfMemoryError e )
-        {
-            result = addExceptionToResult( new DefaultMavenExecutionResult(), e );
-        }
-        catch ( RuntimeException e )
-        {
-            // TODO Hack to make the cycle detection the same for the new graph builder
-            if ( e.getCause() instanceof ProjectCycleException )
-            {
-                result = addExceptionToResult( new DefaultMavenExecutionResult(), e.getCause() );
-            }
-            else
-            {
-                result = addExceptionToResult( new DefaultMavenExecutionResult(),
-                                               new InternalErrorException( "Internal error: " + e, e ) );
-            }
-        }
-        finally
-        {
-            legacySupport.setSession( null );
-        }
+    try {
+      result = doExecute(request);
+    } catch (OutOfMemoryError e) {
+      result = addExceptionToResult(new DefaultMavenExecutionResult(), e);
+    } catch (RuntimeException e) {
+      // TODO Hack to make the cycle detection the same for the new graph
+      // builder
+      if (e.getCause() instanceof ProjectCycleException) {
+        result = addExceptionToResult(new DefaultMavenExecutionResult(),
+                                      e.getCause());
+      } else {
+        result = addExceptionToResult(
+            new DefaultMavenExecutionResult(),
+            new InternalErrorException("Internal error: " + e, e));
+      }
+    } finally {
+      legacySupport.setSession(null);
+    }
 
+    return result;
+  }
+
+  //
+  // 1) Setup initial properties.
+  //
+  // 2) Validate local repository directory is accessible.
+  //
+  // 3) Create RepositorySystemSession.
+  //
+  // 4) Create MavenSession.
+  //
+  // 5) Execute AbstractLifecycleParticipant.afterSessionStart(session)
+  //
+  // 6) Get reactor projects looking for general POM errors
+  //
+  // 7) Create ProjectDependencyGraph using trimming which takes into account
+  // --projects and reactor mode. This ensures that the projects passed into the
+  // ReactorReader are only those specified.
+  //
+  // 8) Create ReactorReader with the getProjectMap( projects ). NOTE that
+  // getProjectMap(projects) is the code that checks for duplicate projects
+  // definitions in the build. Ideally this type of duplicate checking should be
+  // part of getting the reactor projects in 6). The duplicate checking is
+  // conflated with getProjectMap(projects).
+  //
+  // 9) Execute AbstractLifecycleParticipant.afterProjectsRead(session)
+  //
+  // 10) Create ProjectDependencyGraph without trimming (as trimming was done in
+  // 7). A new topological sort is required after the execution of 9) as the
+  // AbstractLifecycleParticipants are free to mutate the MavenProject
+  // instances, which may change dependencies which can, in turn, affect the
+  // build order.
+  //
+  // 11) Execute LifecycleStarter.start()
+  //
+  @SuppressWarnings("checkstyle:methodlength")
+  private MavenExecutionResult doExecute(MavenExecutionRequest request) {
+    request.setStartTime(new Date());
+
+    MavenExecutionResult result = new DefaultMavenExecutionResult();
+
+    try {
+      validateLocalRepository(request);
+    } catch (LocalRepositoryNotAccessibleException e) {
+      return addExceptionToResult(result, e);
+    }
+
+    //
+    // We enter the session scope right after the MavenSession creation and
+    // before any of the AbstractLifecycleParticipant lookups so that
+    // @SessionScoped components can be @Injected into
+    // AbstractLifecycleParticipants.
+    //
+    sessionScope.enter();
+    try {
+      DefaultRepositorySystemSession repoSession =
+          (DefaultRepositorySystemSession)newRepositorySession(request);
+      MavenSession session =
+          new MavenSession(container, repoSession, request, result);
+
+      sessionScope.seed(MavenSession.class, session);
+
+      legacySupport.setSession(session);
+
+      return doExecute(request, session, result, repoSession);
+    } finally {
+      sessionScope.exit();
+    }
+  }
+
+  private MavenExecutionResult
+  doExecute(MavenExecutionRequest request, MavenSession session,
+            MavenExecutionResult result,
+            DefaultRepositorySystemSession repoSession) {
+    try {
+      // CHECKSTYLE_OFF: LineLength
+      for (AbstractMavenLifecycleParticipant listener :
+           getLifecycleParticipants(Collections.<MavenProject>emptyList())) {
+        listener.afterSessionStart(session);
+      }
+      // CHECKSTYLE_ON: LineLength
+    } catch (MavenExecutionException e) {
+      return addExceptionToResult(result, e);
+    }
+
+    eventCatapult.fire(ExecutionEvent.Type.ProjectDiscoveryStarted, session,
+                       null);
+
+    Result<? extends ProjectDependencyGraph> graphResult =
+        buildGraph(session, result);
+
+    if (graphResult.hasErrors()) {
+      return addExceptionToResult(
+          result, graphResult.getProblems().iterator().next().getException());
+    }
+
+    try {
+      session.setProjectMap(getProjectMap(session.getProjects()));
+    } catch (DuplicateProjectException e) {
+      return addExceptionToResult(result, e);
+    }
+
+    WorkspaceReader reactorWorkspace;
+    try {
+      reactorWorkspace =
+          container.lookup(WorkspaceReader.class, ReactorReader.HINT);
+    } catch (ComponentLookupException e) {
+      return addExceptionToResult(result, e);
+    }
+
+    //
+    // Desired order of precedence for local artifact repositories
+    //
+    // Reactor
+    // Workspace
+    // User Local Repository
+    //
+    repoSession.setWorkspaceReader(ChainedWorkspaceReader.newInstance(
+        reactorWorkspace, repoSession.getWorkspaceReader()));
+
+    repoSession.setReadOnly();
+
+    ClassLoader originalClassLoader =
+        Thread.currentThread().getContextClassLoader();
+    try {
+      for (AbstractMavenLifecycleParticipant listener :
+           getLifecycleParticipants(session.getProjects())) {
+        Thread.currentThread().setContextClassLoader(
+            listener.getClass().getClassLoader());
+
+        listener.afterProjectsRead(session);
+      }
+    } catch (MavenExecutionException e) {
+      return addExceptionToResult(result, e);
+    } finally {
+      Thread.currentThread().setContextClassLoader(originalClassLoader);
+    }
+
+    //
+    // The projects need to be topologically after the participants have run
+    // their afterProjectsRead(session) because the participant is free to
+    // change the dependencies of a project which can potentially change the
+    // topological order of the projects, and therefore can potentially change
+    // the build order.
+    //
+    // Note that participants may affect the topological order of the projects
+    // but it is not expected that a participant will add or remove projects
+    // from the session.
+    //
+
+    graphResult = buildGraph(session, result);
+
+    if (graphResult.hasErrors()) {
+      return addExceptionToResult(
+          result, graphResult.getProblems().iterator().next().getException());
+    }
+
+    try {
+      if (result.hasExceptions()) {
         return result;
+      }
+
+      result.setTopologicallySortedProjects(session.getProjects());
+
+      result.setProject(session.getTopLevelProject());
+
+      validatePrerequisitesForNonMavenPluginProjects(session.getProjects());
+
+      lifecycleStarter.execute(session);
+
+      validateActivatedProfiles(session.getProjects(),
+                                request.getActiveProfiles());
+
+      if (session.getResult().hasExceptions()) {
+        return addExceptionToResult(result,
+                                    session.getResult().getExceptions().get(0));
+      }
+    } finally {
+      try {
+        afterSessionEnd(session.getProjects(), session);
+      } catch (MavenExecutionException e) {
+        return addExceptionToResult(result, e);
+      }
     }
 
-    //
-    // 1) Setup initial properties.
-    //
-    // 2) Validate local repository directory is accessible.
-    //
-    // 3) Create RepositorySystemSession.
-    //
-    // 4) Create MavenSession.
-    //
-    // 5) Execute AbstractLifecycleParticipant.afterSessionStart(session)
-    //
-    // 6) Get reactor projects looking for general POM errors
-    //
-    // 7) Create ProjectDependencyGraph using trimming which takes into account --projects and reactor mode.
-    // This ensures that the projects passed into the ReactorReader are only those specified.
-    //
-    // 8) Create ReactorReader with the getProjectMap( projects ). NOTE that getProjectMap(projects) is the code that
-    // checks for duplicate projects definitions in the build. Ideally this type of duplicate checking should be
-    // part of getting the reactor projects in 6). The duplicate checking is conflated with getProjectMap(projects).
-    //
-    // 9) Execute AbstractLifecycleParticipant.afterProjectsRead(session)
-    //
-    // 10) Create ProjectDependencyGraph without trimming (as trimming was done in 7). A new topological sort is
-    // required after the execution of 9) as the AbstractLifecycleParticipants are free to mutate the MavenProject
-    // instances, which may change dependencies which can, in turn, affect the build order.
-    //
-    // 11) Execute LifecycleStarter.start()
-    //
-    @SuppressWarnings( "checkstyle:methodlength" )
-    private MavenExecutionResult doExecute( MavenExecutionRequest request )
-    {
-        request.setStartTime( new Date() );
+    return result;
+  }
 
-        MavenExecutionResult result = new DefaultMavenExecutionResult();
+  private void afterSessionEnd(Collection<MavenProject> projects,
+                               MavenSession session)
+      throws MavenExecutionException {
+    ClassLoader originalClassLoader =
+        Thread.currentThread().getContextClassLoader();
+    try {
+      for (AbstractMavenLifecycleParticipant listener :
+           getLifecycleParticipants(projects)) {
+        Thread.currentThread().setContextClassLoader(
+            listener.getClass().getClassLoader());
 
-        try
-        {
-            validateLocalRepository( request );
+        listener.afterSessionEnd(session);
+      }
+    } finally {
+      Thread.currentThread().setContextClassLoader(originalClassLoader);
+    }
+  }
+
+  public RepositorySystemSession
+  newRepositorySession(MavenExecutionRequest request) {
+    return repositorySessionFactory.newRepositorySession(request);
+  }
+
+  private void validateLocalRepository(MavenExecutionRequest request)
+      throws LocalRepositoryNotAccessibleException {
+    File localRepoDir = request.getLocalRepositoryPath();
+
+    logger.debug("Using local repository at " + localRepoDir);
+
+    localRepoDir.mkdirs();
+
+    if (!localRepoDir.isDirectory()) {
+      throw new LocalRepositoryNotAccessibleException(
+          "Could not create local repository at " + localRepoDir);
+    }
+  }
+
+  private Collection<AbstractMavenLifecycleParticipant>
+  getLifecycleParticipants(Collection<MavenProject> projects) {
+    Collection<AbstractMavenLifecycleParticipant> lifecycleListeners =
+        new LinkedHashSet<>();
+
+    ClassLoader originalClassLoader =
+        Thread.currentThread().getContextClassLoader();
+    try {
+      try {
+        lifecycleListeners.addAll(
+            container.lookupList(AbstractMavenLifecycleParticipant.class));
+      } catch (ComponentLookupException e) {
+        // this is just silly, lookupList should return an empty list!
+        logger.warn("Failed to lookup lifecycle participants: " +
+                    e.getMessage());
+      }
+
+      Collection<ClassLoader> scannedRealms = new HashSet<>();
+
+      for (MavenProject project : projects) {
+        ClassLoader projectRealm = project.getClassRealm();
+
+        if (projectRealm != null && scannedRealms.add(projectRealm)) {
+          Thread.currentThread().setContextClassLoader(projectRealm);
+
+          try {
+            lifecycleListeners.addAll(
+                container.lookupList(AbstractMavenLifecycleParticipant.class));
+          } catch (ComponentLookupException e) {
+            // this is just silly, lookupList should return an empty list!
+            logger.warn("Failed to lookup lifecycle participants: " +
+                        e.getMessage());
+          }
         }
-        catch ( LocalRepositoryNotAccessibleException e )
-        {
-            return addExceptionToResult( result, e );
-        }
-
-        //
-        // We enter the session scope right after the MavenSession creation and before any of the
-        // AbstractLifecycleParticipant lookups
-        // so that @SessionScoped components can be @Injected into AbstractLifecycleParticipants.
-        //
-        sessionScope.enter();
-        try
-        {
-            DefaultRepositorySystemSession repoSession =
-                (DefaultRepositorySystemSession) newRepositorySession( request );
-            MavenSession session = new MavenSession( container, repoSession, request, result );
-
-            sessionScope.seed( MavenSession.class, session );
-
-            legacySupport.setSession( session );
-
-            return doExecute( request, session, result, repoSession );
-        }
-        finally
-        {
-            sessionScope.exit();
-        }
+      }
+    } finally {
+      Thread.currentThread().setContextClassLoader(originalClassLoader);
     }
 
-    private MavenExecutionResult doExecute( MavenExecutionRequest request, MavenSession session,
-                                            MavenExecutionResult result, DefaultRepositorySystemSession repoSession )
-    {
-        try
-        {
-            // CHECKSTYLE_OFF: LineLength
-            for ( AbstractMavenLifecycleParticipant listener : getLifecycleParticipants( Collections.<MavenProject>emptyList() ) )
-            {
-                listener.afterSessionStart( session );
-            }
-            // CHECKSTYLE_ON: LineLength
-        }
-        catch ( MavenExecutionException e )
-        {
-            return addExceptionToResult( result, e );
-        }
+    return lifecycleListeners;
+  }
 
-        eventCatapult.fire( ExecutionEvent.Type.ProjectDiscoveryStarted, session, null );
-
-        Result<? extends ProjectDependencyGraph> graphResult = buildGraph( session, result );
-
-        if ( graphResult.hasErrors() )
-        {
-            return addExceptionToResult( result, graphResult.getProblems().iterator().next().getException() );
-        }
-
-        try
-        {
-            session.setProjectMap( getProjectMap( session.getProjects() ) );
-        }
-        catch ( DuplicateProjectException e )
-        {
-            return addExceptionToResult( result, e );
-        }
-
-        WorkspaceReader reactorWorkspace;
-        try
-        {
-            reactorWorkspace = container.lookup( WorkspaceReader.class, ReactorReader.HINT );
-        }
-        catch ( ComponentLookupException e )
-        {
-            return addExceptionToResult( result, e );
-        }
-
-        //
-        // Desired order of precedence for local artifact repositories
-        //
-        // Reactor
-        // Workspace
-        // User Local Repository
-        //
-        repoSession.setWorkspaceReader( ChainedWorkspaceReader.newInstance( reactorWorkspace,
-                                                                            repoSession.getWorkspaceReader() ) );
-
-        repoSession.setReadOnly();
-
-        ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
-        try
-        {
-            for ( AbstractMavenLifecycleParticipant listener : getLifecycleParticipants( session.getProjects() ) )
-            {
-                Thread.currentThread().setContextClassLoader( listener.getClass().getClassLoader() );
-
-                listener.afterProjectsRead( session );
-            }
-        }
-        catch ( MavenExecutionException e )
-        {
-            return addExceptionToResult( result, e );
-        }
-        finally
-        {
-            Thread.currentThread().setContextClassLoader( originalClassLoader );
-        }
-
-        //
-        // The projects need to be topologically after the participants have run their afterProjectsRead(session)
-        // because the participant is free to change the dependencies of a project which can potentially change the
-        // topological order of the projects, and therefore can potentially change the build order.
-        //
-        // Note that participants may affect the topological order of the projects but it is
-        // not expected that a participant will add or remove projects from the session.
-        //
-
-        graphResult = buildGraph( session, result );
-
-        if ( graphResult.hasErrors() )
-        {
-            return addExceptionToResult( result, graphResult.getProblems().iterator().next().getException() );
-        }
-
-        try
-        {
-            if ( result.hasExceptions() )
-            {
-                return result;
-            }
-
-            result.setTopologicallySortedProjects( session.getProjects() );
-
-            result.setProject( session.getTopLevelProject() );
-
-            validatePrerequisitesForNonMavenPluginProjects( session.getProjects() );
-
-            lifecycleStarter.execute( session );
-
-            validateActivatedProfiles( session.getProjects(), request.getActiveProfiles() );
-
-            if ( session.getResult().hasExceptions() )
-            {
-                return addExceptionToResult( result, session.getResult().getExceptions().get( 0 ) );
-            }
-        }
-        finally
-        {
-            try
-            {
-                afterSessionEnd( session.getProjects(), session );
-            }
-            catch ( MavenExecutionException e )
-            {
-                return addExceptionToResult( result, e );
-            }
-        }
-
-        return result;
+  private MavenExecutionResult addExceptionToResult(MavenExecutionResult result,
+                                                    Throwable e) {
+    if (!result.getExceptions().contains(e)) {
+      result.addException(e);
     }
 
-    private void afterSessionEnd( Collection<MavenProject> projects, MavenSession session )
-        throws MavenExecutionException
-    {
-        ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
-        try
-        {
-            for ( AbstractMavenLifecycleParticipant listener : getLifecycleParticipants( projects ) )
-            {
-                Thread.currentThread().setContextClassLoader( listener.getClass().getClassLoader() );
+    return result;
+  }
 
-                listener.afterSessionEnd( session );
-            }
+  private void
+  validatePrerequisitesForNonMavenPluginProjects(List<MavenProject> projects) {
+    for (MavenProject mavenProject : projects) {
+      if (!"maven-plugin".equals(mavenProject.getPackaging())) {
+        Prerequisites prerequisites = mavenProject.getPrerequisites();
+        if (prerequisites != null && prerequisites.getMaven() != null) {
+          logger.warn(
+              "The project " + mavenProject.getId() + " uses prerequisites"
+              + " which is only intended for maven-plugin projects "
+              + "but not for non maven-plugin projects. "
+              + "For such purposes you should use the maven-enforcer-plugin. "
+              +
+              "See https://maven.apache.org/enforcer/enforcer-rules/requireMavenVersion.html");
         }
-        finally
-        {
-            Thread.currentThread().setContextClassLoader( originalClassLoader );
-        }
+      }
+    }
+  }
+
+  private void validateActivatedProfiles(List<MavenProject> projects,
+                                         List<String> activeProfileIds) {
+    Collection<String> notActivatedProfileIds =
+        new LinkedHashSet<>(activeProfileIds);
+
+    for (MavenProject project : projects) {
+      for (List<String> profileIds : project.getInjectedProfileIds().values()) {
+        notActivatedProfileIds.removeAll(profileIds);
+      }
     }
 
-    public RepositorySystemSession newRepositorySession( MavenExecutionRequest request )
-    {
-        return repositorySessionFactory.newRepositorySession( request );
+    for (String notActivatedProfileId : notActivatedProfileIds) {
+      logger.warn("The requested profile \"" + notActivatedProfileId +
+                  "\" could not be activated because it does not exist.");
+    }
+  }
+
+  private Map<String, MavenProject>
+  getProjectMap(Collection<MavenProject> projects)
+      throws DuplicateProjectException {
+    Map<String, MavenProject> index = new LinkedHashMap<>();
+    Map<String, List<File>> collisions = new LinkedHashMap<>();
+
+    for (MavenProject project : projects) {
+      String projectId = ArtifactUtils.key(
+          project.getGroupId(), project.getArtifactId(), project.getVersion());
+
+      MavenProject collision = index.get(projectId);
+
+      if (collision == null) {
+        index.put(projectId, project);
+      } else {
+        List<File> pomFiles = collisions.get(projectId);
+
+        if (pomFiles == null) {
+          pomFiles = new ArrayList<>(
+              Arrays.asList(collision.getFile(), project.getFile()));
+          collisions.put(projectId, pomFiles);
+        } else {
+          pomFiles.add(project.getFile());
+        }
+      }
     }
 
-    private void validateLocalRepository( MavenExecutionRequest request )
-        throws LocalRepositoryNotAccessibleException
-    {
-        File localRepoDir = request.getLocalRepositoryPath();
-
-        logger.debug( "Using local repository at " + localRepoDir );
-
-        localRepoDir.mkdirs();
-
-        if ( !localRepoDir.isDirectory() )
-        {
-            throw new LocalRepositoryNotAccessibleException( "Could not create local repository at " + localRepoDir );
-        }
+    if (!collisions.isEmpty()) {
+      throw new DuplicateProjectException(
+          "Two or more projects in the reactor"
+              +
+              " have the same identifier, please make sure that <groupId>:<artifactId>:<version>"
+              + " is unique for each project: " + collisions,
+          collisions);
     }
 
-    private Collection<AbstractMavenLifecycleParticipant> getLifecycleParticipants( Collection<MavenProject> projects )
-    {
-        Collection<AbstractMavenLifecycleParticipant> lifecycleListeners = new LinkedHashSet<>();
+    return index;
+  }
 
-        ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
-        try
-        {
-            try
-            {
-                lifecycleListeners.addAll( container.lookupList( AbstractMavenLifecycleParticipant.class ) );
-            }
-            catch ( ComponentLookupException e )
-            {
-                // this is just silly, lookupList should return an empty list!
-                logger.warn( "Failed to lookup lifecycle participants: " + e.getMessage() );
-            }
-
-            Collection<ClassLoader> scannedRealms = new HashSet<>();
-
-            for ( MavenProject project : projects )
-            {
-                ClassLoader projectRealm = project.getClassRealm();
-
-                if ( projectRealm != null && scannedRealms.add( projectRealm ) )
-                {
-                    Thread.currentThread().setContextClassLoader( projectRealm );
-
-                    try
-                    {
-                        lifecycleListeners.addAll( container.lookupList( AbstractMavenLifecycleParticipant.class ) );
-                    }
-                    catch ( ComponentLookupException e )
-                    {
-                        // this is just silly, lookupList should return an empty list!
-                        logger.warn( "Failed to lookup lifecycle participants: " + e.getMessage() );
-                    }
-                }
-            }
-        }
-        finally
-        {
-            Thread.currentThread().setContextClassLoader( originalClassLoader );
-        }
-
-        return lifecycleListeners;
+  private Result<? extends ProjectDependencyGraph>
+  buildGraph(MavenSession session, MavenExecutionResult result) {
+    Result<? extends ProjectDependencyGraph> graphResult =
+        graphBuilder.build(session);
+    for (ModelProblem problem : graphResult.getProblems()) {
+      if (problem.getSeverity() == ModelProblem.Severity.WARNING) {
+        logger.warn(problem.toString());
+      } else {
+        logger.error(problem.toString());
+      }
     }
 
-    private MavenExecutionResult addExceptionToResult( MavenExecutionResult result, Throwable e )
-    {
-        if ( !result.getExceptions().contains( e ) )
-        {
-            result.addException( e );
-        }
-
-        return result;
+    if (!graphResult.hasErrors()) {
+      ProjectDependencyGraph projectDependencyGraph = graphResult.get();
+      session.setProjects(projectDependencyGraph.getSortedProjects());
+      session.setAllProjects(projectDependencyGraph.getAllProjects());
+      session.setProjectDependencyGraph(projectDependencyGraph);
     }
 
-    private void validatePrerequisitesForNonMavenPluginProjects( List<MavenProject> projects )
-    {
-        for ( MavenProject mavenProject : projects )
-        {
-            if ( !"maven-plugin".equals( mavenProject.getPackaging() ) )
-            {
-                Prerequisites prerequisites = mavenProject.getPrerequisites();
-                if ( prerequisites != null && prerequisites.getMaven() != null )
-                {
-                    logger.warn( "The project " + mavenProject.getId() + " uses prerequisites"
-                        + " which is only intended for maven-plugin projects "
-                        + "but not for non maven-plugin projects. "
-                        + "For such purposes you should use the maven-enforcer-plugin. "
-                        + "See https://maven.apache.org/enforcer/enforcer-rules/requireMavenVersion.html" );
-                }
-            }
-        }
-    }
+    return graphResult;
+  }
 
-    private void validateActivatedProfiles( List<MavenProject> projects, List<String> activeProfileIds )
-    {
-        Collection<String> notActivatedProfileIds = new LinkedHashSet<>( activeProfileIds );
-
-        for ( MavenProject project : projects )
-        {
-            for ( List<String> profileIds : project.getInjectedProfileIds().values() )
-            {
-                notActivatedProfileIds.removeAll( profileIds );
-            }
-        }
-
-        for ( String notActivatedProfileId : notActivatedProfileIds )
-        {
-            logger.warn( "The requested profile \"" + notActivatedProfileId
-                + "\" could not be activated because it does not exist." );
-        }
-    }
-
-    private Map<String, MavenProject> getProjectMap( Collection<MavenProject> projects )
-        throws DuplicateProjectException
-    {
-        Map<String, MavenProject> index = new LinkedHashMap<>();
-        Map<String, List<File>> collisions = new LinkedHashMap<>();
-
-        for ( MavenProject project : projects )
-        {
-            String projectId = ArtifactUtils.key( project.getGroupId(), project.getArtifactId(), project.getVersion() );
-
-            MavenProject collision = index.get( projectId );
-
-            if ( collision == null )
-            {
-                index.put( projectId, project );
-            }
-            else
-            {
-                List<File> pomFiles = collisions.get( projectId );
-
-                if ( pomFiles == null )
-                {
-                    pomFiles = new ArrayList<>( Arrays.asList( collision.getFile(), project.getFile() ) );
-                    collisions.put( projectId, pomFiles );
-                }
-                else
-                {
-                    pomFiles.add( project.getFile() );
-                }
-            }
-        }
-
-        if ( !collisions.isEmpty() )
-        {
-            throw new DuplicateProjectException( "Two or more projects in the reactor"
-                + " have the same identifier, please make sure that <groupId>:<artifactId>:<version>"
-                + " is unique for each project: " + collisions, collisions );
-        }
-
-        return index;
-    }
-
-    private Result<? extends ProjectDependencyGraph> buildGraph( MavenSession session, MavenExecutionResult result )
-    {
-        Result<? extends ProjectDependencyGraph> graphResult = graphBuilder.build( session );
-        for ( ModelProblem problem : graphResult.getProblems() )
-        {
-            if ( problem.getSeverity() == ModelProblem.Severity.WARNING )
-            {
-                logger.warn( problem.toString() );
-            }
-            else
-            {
-                logger.error( problem.toString() );
-            }
-        }
-
-        if ( !graphResult.hasErrors() )
-        {
-            ProjectDependencyGraph projectDependencyGraph = graphResult.get();
-            session.setProjects( projectDependencyGraph.getSortedProjects() );
-            session.setAllProjects( projectDependencyGraph.getAllProjects() );
-            session.setProjectDependencyGraph( projectDependencyGraph );
-        }
-
-        return graphResult;
-    }
-
-    @Deprecated
-    // 5 January 2014
-    protected Logger getLogger()
-    {
-        return logger;
-    }
+  @Deprecated
+  // 5 January 2014
+  protected Logger getLogger() {
+    return logger;
+  }
 }

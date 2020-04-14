@@ -26,11 +26,9 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
 import javax.inject.Inject;
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.lifecycle.LifeCyclePluginAnalyzer;
 import org.apache.maven.model.Build;
 import org.apache.maven.model.Model;
@@ -39,166 +37,157 @@ import org.apache.maven.model.PluginContainer;
 import org.apache.maven.model.PluginExecution;
 import org.apache.maven.model.PluginManagement;
 import org.apache.maven.model.building.ModelBuildingRequest;
-import org.apache.maven.model.building.ModelProblemCollector;
 import org.apache.maven.model.building.ModelProblem.Severity;
 import org.apache.maven.model.building.ModelProblem.Version;
+import org.apache.maven.model.building.ModelProblemCollector;
 import org.apache.maven.model.building.ModelProblemCollectorRequest;
 import org.apache.maven.model.merge.MavenModelMerger;
 
 /**
- * Handles injection of plugin executions induced by the lifecycle bindings for a packaging.
+ * Handles injection of plugin executions induced by the lifecycle bindings for
+ * a packaging.
  *
  * @author Benjamin Bentmann
  */
 @Named
 @Singleton
 public class DefaultLifecycleBindingsInjector
-    implements LifecycleBindingsInjector
-{
+    implements LifecycleBindingsInjector {
 
-    private LifecycleBindingsMerger merger = new LifecycleBindingsMerger();
+  private LifecycleBindingsMerger merger = new LifecycleBindingsMerger();
 
-    @Inject
-    private LifeCyclePluginAnalyzer lifecycle;
+  @Inject private LifeCyclePluginAnalyzer lifecycle;
 
-    public void injectLifecycleBindings( Model model, ModelBuildingRequest request, ModelProblemCollector problems )
-    {
-        String packaging = model.getPackaging();
+  public void injectLifecycleBindings(Model model, ModelBuildingRequest request,
+                                      ModelProblemCollector problems) {
+    String packaging = model.getPackaging();
 
-        Collection<Plugin> defaultPlugins = lifecycle.getPluginsBoundByDefaultToAllLifecycles( packaging );
+    Collection<Plugin> defaultPlugins =
+        lifecycle.getPluginsBoundByDefaultToAllLifecycles(packaging);
 
-        if ( defaultPlugins == null )
-        {
-            problems.add( new ModelProblemCollectorRequest( Severity.ERROR, Version.BASE )
-                    .setMessage( "Unknown packaging: " + packaging )
-                    .setLocation( model.getLocation( "packaging" ) ) );
+    if (defaultPlugins == null) {
+      problems.add(
+          new ModelProblemCollectorRequest(Severity.ERROR, Version.BASE)
+              .setMessage("Unknown packaging: " + packaging)
+              .setLocation(model.getLocation("packaging")));
+    } else if (!defaultPlugins.isEmpty()) {
+      Model lifecycleModel = new Model();
+      lifecycleModel.setBuild(new Build());
+      lifecycleModel.getBuild().getPlugins().addAll(defaultPlugins);
+
+      merger.merge(model, lifecycleModel, problems);
+    }
+  }
+
+  /**
+   *  The domain-specific model merger for lifecycle bindings
+   */
+  protected static class LifecycleBindingsMerger extends MavenModelMerger {
+
+    private static final String PLUGIN_MANAGEMENT = "plugin-management";
+    private static final String NO_VERSION_PLUGINS = "no-version-plugins";
+
+    public void merge(Model target, Model source,
+                      ModelProblemCollector problems) {
+      if (target.getBuild() == null) {
+        target.setBuild(new Build());
+      }
+
+      Map<Object, Object> context = new HashMap<Object, Object>();
+      context.put(PLUGIN_MANAGEMENT, target.getBuild().getPluginManagement());
+
+      mergePluginContainer_Plugins(target.getBuild(), source.getBuild(), false,
+                                   context);
+
+      @SuppressWarnings("unchecked")
+      Collection<Plugin> defaultVersionPlugins =
+          (Collection<Plugin>)context.get(NO_VERSION_PLUGINS);
+      if (defaultVersionPlugins != null) {
+        List<String> plugins = new ArrayList<>(defaultVersionPlugins.size());
+        for (Plugin p : defaultVersionPlugins) {
+          plugins.add(p.getArtifactId());
         }
-        else if ( !defaultPlugins.isEmpty() )
-        {
-            Model lifecycleModel = new Model();
-            lifecycleModel.setBuild( new Build() );
-            lifecycleModel.getBuild().getPlugins().addAll( defaultPlugins );
 
-            merger.merge( model, lifecycleModel, problems );
-        }
+        problems.add(
+            new ModelProblemCollectorRequest(Severity.WARNING, Version.BASE)
+                .setMessage(
+                    "Version not locked for default bindings plugins " +
+                    plugins +
+                    ", you should define versions in pluginManagement section of your "
+                    + "pom.xml or parent")
+                .setLocation(target.getLocation("packaging")));
+      }
     }
 
-    /**
-     *  The domain-specific model merger for lifecycle bindings
-     */
-    protected static class LifecycleBindingsMerger
-        extends MavenModelMerger
-    {
+    @SuppressWarnings({"checkstyle:methodname"})
+    @Override
+    protected void mergePluginContainer_Plugins(PluginContainer target,
+                                                PluginContainer source,
+                                                boolean sourceDominant,
+                                                Map<Object, Object> context) {
+      List<Plugin> src = source.getPlugins();
+      if (!src.isEmpty()) {
+        List<Plugin> tgt = target.getPlugins();
 
-        private static final String PLUGIN_MANAGEMENT = "plugin-management";
-        private static final String NO_VERSION_PLUGINS = "no-version-plugins";
+        Map<Object, Plugin> merged =
+            new LinkedHashMap<>((src.size() + tgt.size()) * 2);
 
-        public void merge( Model target, Model source, ModelProblemCollector problems )
-        {
-            if ( target.getBuild() == null )
-            {
-                target.setBuild( new Build() );
-            }
-
-            Map<Object, Object> context = new HashMap<Object, Object>();
-            context.put( PLUGIN_MANAGEMENT, target.getBuild().getPluginManagement() );
-
-            mergePluginContainer_Plugins( target.getBuild(), source.getBuild(), false, context );
-
-            @SuppressWarnings( "unchecked" )
-            Collection<Plugin> defaultVersionPlugins = (Collection<Plugin>) context.get( NO_VERSION_PLUGINS );
-            if ( defaultVersionPlugins != null )
-            {
-                List<String> plugins = new ArrayList<>( defaultVersionPlugins.size() );
-                for ( Plugin p : defaultVersionPlugins )
-                {
-                    plugins.add( p.getArtifactId() );
-                }
-
-                problems.add( new ModelProblemCollectorRequest( Severity.WARNING, Version.BASE )
-                              .setMessage( "Version not locked for default bindings plugins " + plugins
-                                           + ", you should define versions in pluginManagement section of your "
-                                           + "pom.xml or parent" )
-                              .setLocation( target.getLocation( "packaging" ) ) );
-            }
+        for (Plugin element : tgt) {
+          Object key = getPluginKey().apply(element);
+          merged.put(key, element);
         }
 
-        @SuppressWarnings( { "checkstyle:methodname" } )
-        @Override
-        protected void mergePluginContainer_Plugins( PluginContainer target, PluginContainer source,
-                                                     boolean sourceDominant, Map<Object, Object> context )
-        {
-            List<Plugin> src = source.getPlugins();
-            if ( !src.isEmpty() )
-            {
-                List<Plugin> tgt = target.getPlugins();
+        Map<Object, Plugin> added = new LinkedHashMap<>();
 
-                Map<Object, Plugin> merged = new LinkedHashMap<>( ( src.size() + tgt.size() ) * 2 );
+        for (Plugin element : src) {
+          Object key = getPluginKey().apply(element);
+          Plugin existing = merged.get(key);
+          if (existing != null) {
+            mergePlugin(existing, element, sourceDominant, context);
+          } else {
+            merged.put(key, element);
+            added.put(key, element);
+          }
+        }
 
-                for ( Plugin element : tgt )
-                {
-                    Object key = getPluginKey().apply( element );
-                    merged.put( key, element );
-                }
-
-                Map<Object, Plugin> added = new LinkedHashMap<>();
-
-                for ( Plugin element : src )
-                {
-                    Object key = getPluginKey().apply( element );
-                    Plugin existing = merged.get( key );
-                    if ( existing != null )
-                    {
-                        mergePlugin( existing, element, sourceDominant, context );
-                    }
-                    else
-                    {
-                        merged.put( key, element );
-                        added.put( key, element );
-                    }
-                }
-
-                if ( !added.isEmpty() )
-                {
-                    PluginManagement pluginMgmt = (PluginManagement) context.get( PLUGIN_MANAGEMENT );
-                    if ( pluginMgmt != null )
-                    {
-                        for ( Plugin managedPlugin : pluginMgmt.getPlugins() )
-                        {
-                            Object key = getPluginKey().apply( managedPlugin );
-                            Plugin addedPlugin = // remove plugin only if managedPlugin defines version
-                                ( managedPlugin.getVersion() == null ) ? added.get( key ) : added.remove( key );
-                            if ( addedPlugin != null )
-                            {
-                                Plugin plugin = managedPlugin.clone();
-                                mergePlugin( plugin, addedPlugin, sourceDominant, Collections.emptyMap() );
-                                merged.put( key, plugin );
-                            }
-                        }
-                    }
-
-                    if ( !added.isEmpty() )
-                    {
-                        // some plugins added with default version from bindings
-                        context.put( NO_VERSION_PLUGINS, added.values() );
-                    }
-                }
-
-                List<Plugin> result = new ArrayList<>( merged.values() );
-
-                target.setPlugins( result );
+        if (!added.isEmpty()) {
+          PluginManagement pluginMgmt =
+              (PluginManagement)context.get(PLUGIN_MANAGEMENT);
+          if (pluginMgmt != null) {
+            for (Plugin managedPlugin : pluginMgmt.getPlugins()) {
+              Object key = getPluginKey().apply(managedPlugin);
+              Plugin addedPlugin = // remove plugin only if managedPlugin
+                                   // defines version
+                  (managedPlugin.getVersion() == null) ? added.get(key)
+                                                       : added.remove(key);
+              if (addedPlugin != null) {
+                Plugin plugin = managedPlugin.clone();
+                mergePlugin(plugin, addedPlugin, sourceDominant,
+                            Collections.emptyMap());
+                merged.put(key, plugin);
+              }
             }
+          }
+
+          if (!added.isEmpty()) {
+            // some plugins added with default version from bindings
+            context.put(NO_VERSION_PLUGINS, added.values());
+          }
         }
 
-        @Override
-        protected void mergePluginExecution( PluginExecution target, PluginExecution source, boolean sourceDominant,
-                                             Map<Object, Object> context )
-        {
-            super.mergePluginExecution( target, source, sourceDominant, context );
+        List<Plugin> result = new ArrayList<>(merged.values());
 
-            target.setPriority( Math.min( target.getPriority(), source.getPriority() ) );
-        }
-
+        target.setPlugins(result);
+      }
     }
 
+    @Override
+    protected void
+    mergePluginExecution(PluginExecution target, PluginExecution source,
+                         boolean sourceDominant, Map<Object, Object> context) {
+      super.mergePluginExecution(target, source, sourceDominant, context);
+
+      target.setPriority(Math.min(target.getPriority(), source.getPriority()));
+    }
+  }
 }

@@ -26,70 +26,54 @@ import java.util.List;
 /**
  * @author <a href="mailto:trygvis@inamo.no">Trygve Laugst&oslash;l</a>
  */
-public class ModelValidationResult
-{
+public class ModelValidationResult {
 
-    /** */
-    private static final String LS = System.lineSeparator();
+  /** */
+  private static final String LS = System.lineSeparator();
 
-    /** */
-    private List<String> messages;
+  /** */
+  private List<String> messages;
 
-    public ModelValidationResult()
-    {
-        messages = new ArrayList<>();
+  public ModelValidationResult() { messages = new ArrayList<>(); }
+
+  public int getMessageCount() { return messages.size(); }
+
+  public String getMessage(int i) { return messages.get(i); }
+
+  public List<String> getMessages() {
+    return Collections.unmodifiableList(messages);
+  }
+
+  public void addMessage(String message) { messages.add(message); }
+
+  public String toString() { return render(""); }
+
+  public String render(String indentation) {
+    if (messages.size() == 0) {
+      return indentation + "There were no validation errors.";
     }
 
-    public int getMessageCount()
-    {
-        return messages.size();
+    StringBuilder message = new StringBuilder();
+
+    //        if ( messages.size() == 1 )
+    //        {
+    //            message.append( "There was 1 validation error: " );
+    //        }
+    //        else
+    //        {
+    //            message.append( "There was " + messages.size() + " validation
+    //            errors: " + LS );
+    //        }
+    //
+    for (int i = 0; i < messages.size(); i++) {
+      message.append(indentation)
+          .append('[')
+          .append(i)
+          .append("]  ")
+          .append(messages.get(i))
+          .append(LS);
     }
 
-    public String getMessage( int i )
-    {
-        return messages.get( i );
-    }
-
-    public List<String> getMessages()
-    {
-        return Collections.unmodifiableList( messages );
-    }
-
-    public void addMessage( String message )
-    {
-        messages.add( message );
-    }
-
-    public String toString()
-    {
-        return render( "" );
-    }
-
-    public String render( String indentation )
-    {
-        if ( messages.size() == 0 )
-        {
-            return indentation + "There were no validation errors.";
-        }
-
-        StringBuilder message = new StringBuilder();
-
-//        if ( messages.size() == 1 )
-//        {
-//            message.append( "There was 1 validation error: " );
-//        }
-//        else
-//        {
-//            message.append( "There was " + messages.size() + " validation errors: " + LS );
-//        }
-//
-        for ( int i = 0; i < messages.size(); i++ )
-        {
-            message.append( indentation ).append( '[' ).append( i ).append( "]  " ).append( messages.get( i ) ).append(
-                LS );
-        }
-
-        return message.toString();
-    }
-
+    return message.toString();
+  }
 }

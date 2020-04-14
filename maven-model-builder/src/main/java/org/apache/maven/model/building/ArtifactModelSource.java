@@ -22,38 +22,28 @@ package org.apache.maven.model.building;
 import java.io.File;
 
 /**
- * 
+ *
  * @author Robert Scholte
  * @since 3.7.0
  */
-public class ArtifactModelSource extends FileModelSource
-{
-    private final String groupId;
-    
-    private final String artifactId;
-    
-    private final String version;
+public class ArtifactModelSource extends FileModelSource {
+  private final String groupId;
 
-    public ArtifactModelSource( File file, String groupId, String artifactId, String version )
-    {
-        super( file );
-        this.groupId = groupId;
-        this.artifactId = artifactId;
-        this.version = version;
-    }
+  private final String artifactId;
 
-    public String getGroupId()
-    {
-        return groupId;
-    }
+  private final String version;
 
-    public String getArtifactId()
-    {
-        return artifactId;
-    }
+  public ArtifactModelSource(File file, String groupId, String artifactId,
+                             String version) {
+    super(file);
+    this.groupId = groupId;
+    this.artifactId = artifactId;
+    this.version = version;
+  }
 
-    public String getVersion()
-    {
-        return version;
-    }
+  public String getGroupId() { return groupId; }
+
+  public String getArtifactId() { return artifactId; }
+
+  public String getVersion() { return version; }
 }

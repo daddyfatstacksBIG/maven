@@ -19,56 +19,47 @@ package org.apache.maven.toolchain;
  * under the License.
  */
 
+import java.io.File;
+import java.io.Reader;
+import javax.inject.Inject;
+import javax.inject.Named;
+import javax.inject.Singleton;
 import org.apache.maven.toolchain.model.PersistedToolchains;
 import org.apache.maven.toolchain.model.io.xpp3.MavenToolchainsXpp3Reader;
 import org.codehaus.plexus.logging.Logger;
 import org.codehaus.plexus.util.ReaderFactory;
 
-import java.io.File;
-import java.io.Reader;
-
-import javax.inject.Inject;
-import javax.inject.Named;
-import javax.inject.Singleton;
-
 /**
  * @author Benjamin Bentmann
- * @deprecated instead use {@link org.apache.maven.toolchain.building.DefaultToolchainsBuilder}
+ * @deprecated instead use {@link
+ *     org.apache.maven.toolchain.building.DefaultToolchainsBuilder}
  */
 @Deprecated
-@Named( "default" )
+@Named("default")
 @Singleton
-public class DefaultToolchainsBuilder
-    implements ToolchainsBuilder
-{
+public class DefaultToolchainsBuilder implements ToolchainsBuilder {
 
-    @Inject
-    private Logger logger;
+  @Inject private Logger logger;
 
-    public PersistedToolchains build( File userToolchainsFile )
-        throws MisconfiguredToolchainException
-    {
-        PersistedToolchains toolchains = null;
+  public PersistedToolchains build(File userToolchainsFile)
+      throws MisconfiguredToolchainException {
+    PersistedToolchains toolchains = null;
 
-        if ( userToolchainsFile != null && userToolchainsFile.isFile() )
-        {
-            try ( Reader in = ReaderFactory.newXmlReader( userToolchainsFile ) )
-            {
-                toolchains = new MavenToolchainsXpp3Reader().read( in );
-            }
-            catch ( Exception e )
-            {
-                throw new MisconfiguredToolchainException(
-                    "Cannot read toolchains file at " + userToolchainsFile.getAbsolutePath(), e );
-            }
+    if (userToolchainsFile != null && userToolchainsFile.isFile()) {
+      try (Reader in = ReaderFactory.newXmlReader(userToolchainsFile)) {
+        toolchains = new MavenToolchainsXpp3Reader().read(in);
+      } catch (Exception e) {
+        throw new MisconfiguredToolchainException(
+            "Cannot read toolchains file at " +
+                userToolchainsFile.getAbsolutePath(),
+            e);
+      }
 
-        }
-        else if ( userToolchainsFile != null )
-        {
-            logger.debug( "Toolchains configuration was not found at " + userToolchainsFile );
-        }
-
-        return toolchains;
+    } else if (userToolchainsFile != null) {
+      logger.debug("Toolchains configuration was not found at " +
+                   userToolchainsFile);
     }
 
+    return toolchains;
+  }
 }

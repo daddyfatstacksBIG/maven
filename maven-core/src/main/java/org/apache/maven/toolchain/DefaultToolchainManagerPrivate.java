@@ -22,10 +22,8 @@ package org.apache.maven.toolchain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.toolchain.model.ToolchainModel;
 
@@ -36,50 +34,42 @@ import org.apache.maven.toolchain.model.ToolchainModel;
 @Named
 @Singleton
 public class DefaultToolchainManagerPrivate
-    extends DefaultToolchainManager
-    implements ToolchainManagerPrivate
-{
+    extends DefaultToolchainManager implements ToolchainManagerPrivate {
 
-    @Override
-    public ToolchainPrivate[] getToolchainsForType( String type, MavenSession context )
-        throws MisconfiguredToolchainException
-    {
-        List<ToolchainPrivate> toRet = new ArrayList<>();
+  @Override
+  public ToolchainPrivate[] getToolchainsForType(String type,
+                                                 MavenSession context)
+      throws MisconfiguredToolchainException {
+    List<ToolchainPrivate> toRet = new ArrayList<>();
 
-        ToolchainFactory fact = factories.get( type );
-        if ( fact == null )
-        {
-            logger.error( "Missing toolchain factory for type: " + type
-                + ". Possibly caused by misconfigured project." );
+    ToolchainFactory fact = factories.get(type);
+    if (fact == null) {
+      logger.error("Missing toolchain factory for type: " + type +
+                   ". Possibly caused by misconfigured project.");
+    } else {
+      List<ToolchainModel> availableToolchains =
+          context.getRequest().getToolchains().get(type);
+
+      if (availableToolchains != null) {
+        for (ToolchainModel toolchainModel : availableToolchains) {
+          toRet.add(fact.createToolchain(toolchainModel));
         }
-        else
-        {
-            List<ToolchainModel> availableToolchains = context.getRequest().getToolchains().get( type );
+      }
 
-            if ( availableToolchains != null )
-            {
-                for ( ToolchainModel toolchainModel : availableToolchains )
-                {
-                    toRet.add( fact.createToolchain( toolchainModel ) );
-                }
-            }
-            
-            // add default toolchain
-            ToolchainPrivate tool = fact.createDefaultToolchain();
-            if ( tool != null )
-            {
-                toRet.add( tool );
-            }
-        }
-
-        return toRet.toArray( new ToolchainPrivate[0] );
+      // add default toolchain
+      ToolchainPrivate tool = fact.createDefaultToolchain();
+      if (tool != null) {
+        toRet.add(tool);
+      }
     }
 
-    @Override
-    public void storeToolchainToBuildContext( ToolchainPrivate toolchain, MavenSession session )
-    {
-        Map<String, Object> context = retrieveContext( session );
-        context.put( getStorageKey( toolchain.getType() ), toolchain.getModel() );
-    }
+    return toRet.toArray(new ToolchainPrivate[0]);
+  }
 
+  @Override
+  public void storeToolchainToBuildContext(ToolchainPrivate toolchain,
+                                           MavenSession session) {
+    Map<String, Object> context = retrieveContext(session);
+    context.put(getStorageKey(toolchain.getType()), toolchain.getModel());
+  }
 }

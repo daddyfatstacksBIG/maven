@@ -22,34 +22,28 @@ package org.apache.maven.logwrapper;
 import org.slf4j.event.Level;
 
 /**
- * Responsible for keeping state of whether the threshold of the --fail-on-severity flag has been hit.
+ * Responsible for keeping state of whether the threshold of the
+ * --fail-on-severity flag has been hit.
  */
-public class LogLevelRecorder
-{
-    private final Level logThreshold;
-    private boolean metThreshold = false;
+public class LogLevelRecorder {
+  private final Level logThreshold;
+  private boolean metThreshold = false;
 
-    public LogLevelRecorder( String threshold )
-    {
-        Level level = Level.valueOf( threshold );
-        if ( level.toInt() < Level.WARN.toInt() )
-        {
-            throw new IllegalArgumentException( "Logging severity thresholds can only be set to WARN or ERROR" );
-        }
-
-        logThreshold = level;
+  public LogLevelRecorder(String threshold) {
+    Level level = Level.valueOf(threshold);
+    if (level.toInt() < Level.WARN.toInt()) {
+      throw new IllegalArgumentException(
+          "Logging severity thresholds can only be set to WARN or ERROR");
     }
 
-    public void record( Level logLevel )
-    {
-        if ( !metThreshold && logLevel.toInt() >= logThreshold.toInt() )
-        {
-            metThreshold = true;
-        }
-    }
+    logThreshold = level;
+  }
 
-    public boolean metThreshold()
-    {
-        return metThreshold;
+  public void record(Level logLevel) {
+    if (!metThreshold && logLevel.toInt() >= logThreshold.toInt()) {
+      metThreshold = true;
     }
+  }
+
+  public boolean metThreshold() { return metThreshold; }
 }

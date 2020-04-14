@@ -19,97 +19,90 @@ package org.apache.maven.lifecycle.internal;
  * under the License.
  */
 
-import org.apache.maven.project.MavenProject;
-
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.TreeSet;
+import org.apache.maven.project.MavenProject;
 
 /**
  * <p>
  * Context of dependency artifacts for a particular project.
  * </p>
- * <strong>NOTE:</strong> This class is not part of any public api and can be changed or deleted without prior notice.
- * 
+ * <strong>NOTE:</strong> This class is not part of any public api and can be
+ * changed or deleted without prior notice.
+ *
  * @since 3.0
  * @author Benjamin Bentmann
  * @author Kristian Rosenvold (class extract only)
  */
-// TODO From a concurrency perspective, this class is not good. The combination of mutable/immutable state is not nice
-public class DependencyContext
-{
+// TODO From a concurrency perspective, this class is not good. The combination
+// of mutable/immutable state is not nice
+public class DependencyContext {
 
-    private static final Collection<?> UNRESOLVED = Arrays.asList();
+  private static final Collection<?> UNRESOLVED = Arrays.asList();
 
-    private final MavenProject project;
+  private final MavenProject project;
 
-    private final Collection<String> scopesToCollectForCurrentProject;
+  private final Collection<String> scopesToCollectForCurrentProject;
 
-    private final Collection<String> scopesToResolveForCurrentProject;
+  private final Collection<String> scopesToResolveForCurrentProject;
 
-    private final Collection<String> scopesToCollectForAggregatedProjects;
+  private final Collection<String> scopesToCollectForAggregatedProjects;
 
-    private final Collection<String> scopesToResolveForAggregatedProjects;
+  private final Collection<String> scopesToResolveForAggregatedProjects;
 
-    private volatile Collection<?> lastDependencyArtifacts = UNRESOLVED;
+  private volatile Collection<?> lastDependencyArtifacts = UNRESOLVED;
 
-    private volatile int lastDependencyArtifactCount = -1;
+  private volatile int lastDependencyArtifactCount = -1;
 
-    public DependencyContext( MavenProject project, Collection<String> scopesToCollect,
-                              Collection<String> scopesToResolve )
-    {
-        this.project = project;
-        scopesToCollectForCurrentProject = scopesToCollect;
-        scopesToResolveForCurrentProject = scopesToResolve;
-        scopesToCollectForAggregatedProjects = Collections.synchronizedSet( new TreeSet<>() );
-        scopesToResolveForAggregatedProjects = Collections.synchronizedSet( new TreeSet<>() );
-    }
+  public DependencyContext(MavenProject project,
+                           Collection<String> scopesToCollect,
+                           Collection<String> scopesToResolve) {
+    this.project = project;
+    scopesToCollectForCurrentProject = scopesToCollect;
+    scopesToResolveForCurrentProject = scopesToResolve;
+    scopesToCollectForAggregatedProjects =
+        Collections.synchronizedSet(new TreeSet<>());
+    scopesToResolveForAggregatedProjects =
+        Collections.synchronizedSet(new TreeSet<>());
+  }
 
-    public MavenProject getProject()
-    {
-        return project;
-    }
+  public MavenProject getProject() { return project; }
 
-    public Collection<String> getScopesToCollectForCurrentProject()
-    {
-        return scopesToCollectForCurrentProject;
-    }
+  public Collection<String> getScopesToCollectForCurrentProject() {
+    return scopesToCollectForCurrentProject;
+  }
 
-    public Collection<String> getScopesToResolveForCurrentProject()
-    {
-        return scopesToResolveForCurrentProject;
-    }
+  public Collection<String> getScopesToResolveForCurrentProject() {
+    return scopesToResolveForCurrentProject;
+  }
 
-    public Collection<String> getScopesToCollectForAggregatedProjects()
-    {
-        return scopesToCollectForAggregatedProjects;
-    }
+  public Collection<String> getScopesToCollectForAggregatedProjects() {
+    return scopesToCollectForAggregatedProjects;
+  }
 
-    public Collection<String> getScopesToResolveForAggregatedProjects()
-    {
-        return scopesToResolveForAggregatedProjects;
-    }
+  public Collection<String> getScopesToResolveForAggregatedProjects() {
+    return scopesToResolveForAggregatedProjects;
+  }
 
-    public boolean isResolutionRequiredForCurrentProject()
-    {
-        return lastDependencyArtifacts != project.getDependencyArtifacts() || ( lastDependencyArtifacts != null
-            && lastDependencyArtifactCount != lastDependencyArtifacts.size() );
-    }
+  public boolean isResolutionRequiredForCurrentProject() {
+    return lastDependencyArtifacts != project.getDependencyArtifacts() ||
+        (lastDependencyArtifacts != null &&
+         lastDependencyArtifactCount != lastDependencyArtifacts.size());
+  }
 
-    public boolean isResolutionRequiredForAggregatedProjects( Collection<String> scopesToCollect,
-                                                              Collection<String> scopesToResolve )
-    {
-        boolean required =
-            scopesToCollectForAggregatedProjects.addAll( scopesToCollect )
-                || scopesToResolveForAggregatedProjects.addAll( scopesToResolve );
-        return required;
-    }
+  public boolean isResolutionRequiredForAggregatedProjects(
+      Collection<String> scopesToCollect, Collection<String> scopesToResolve) {
+    boolean required =
+        scopesToCollectForAggregatedProjects.addAll(scopesToCollect) ||
+        scopesToResolveForAggregatedProjects.addAll(scopesToResolve);
+    return required;
+  }
 
-    public void synchronizeWithProjectState()
-    {
-        lastDependencyArtifacts = project.getDependencyArtifacts();
-        lastDependencyArtifactCount = ( lastDependencyArtifacts != null ) ? lastDependencyArtifacts.size() : 0;
-    }
-
+  public void synchronizeWithProjectState() {
+    lastDependencyArtifacts = project.getDependencyArtifacts();
+    lastDependencyArtifactCount =
+        (lastDependencyArtifacts != null) ? lastDependencyArtifacts.size() : 0;
+  }
 }

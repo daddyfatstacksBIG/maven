@@ -19,36 +19,33 @@ package org.apache.maven.settings;
  * under the License.
  */
 
-import junit.framework.TestCase;
-import org.apache.maven.settings.io.xpp3.SettingsXpp3Reader;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
+import junit.framework.TestCase;
+import org.apache.maven.settings.io.xpp3.SettingsXpp3Reader;
 
 /**
- * Tests that the global settings.xml shipped with the distribution is in good state.
+ * Tests that the global settings.xml shipped with the distribution is in good
+ * state.
  *
  * @author Benjamin Bentmann
  */
-public class GlobalSettingsTest
-    extends TestCase
-{
+public class GlobalSettingsTest extends TestCase {
 
-    public void testValidGlobalSettings()
-        throws Exception
-    {
-        String basedir = System.getProperty( "basedir", System.getProperty( "user.dir" ) );
+  public void testValidGlobalSettings() throws Exception {
+    String basedir =
+        System.getProperty("basedir", System.getProperty("user.dir"));
 
-        File globalSettingsFile = new File( basedir, "src/conf/settings.xml" );
-        assertTrue( globalSettingsFile.getAbsolutePath(), globalSettingsFile.isFile() );
+    File globalSettingsFile = new File(basedir, "src/conf/settings.xml");
+    assertTrue(globalSettingsFile.getAbsolutePath(),
+               globalSettingsFile.isFile());
 
-        try ( Reader reader = new InputStreamReader( new FileInputStream( globalSettingsFile ), StandardCharsets.UTF_8) )
-        {
-            new SettingsXpp3Reader().read( reader );
-        }
+    try (Reader reader = new InputStreamReader(
+             new FileInputStream(globalSettingsFile), StandardCharsets.UTF_8)) {
+      new SettingsXpp3Reader().read(reader);
     }
-
+  }
 }

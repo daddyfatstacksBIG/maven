@@ -19,15 +19,13 @@ package org.apache.maven.logwrapper;
  * under the License.
  */
 
-import org.slf4j.ILoggerFactory;
-
 import java.util.Optional;
+import org.slf4j.ILoggerFactory;
 
 /**
  * Wrapper for creating loggers which can have a log level threshold.
  */
-public interface MavenSlf4jWrapperFactory extends ILoggerFactory
-{
-    void setLogLevelRecorder( LogLevelRecorder logLevelRecorder );
-    Optional<LogLevelRecorder> getLogLevelRecorder();
+public interface MavenSlf4jWrapperFactory extends ILoggerFactory {
+  void setLogLevelRecorder(LogLevelRecorder logLevelRecorder);
+  Optional<LogLevelRecorder> getLogLevelRecorder();
 }

@@ -43,173 +43,145 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-
 import org.codehaus.plexus.util.FileUtils;
 import org.junit.Assert;
 
-public class TestFileManager
-{
+public class TestFileManager {
 
-    public static final String TEMP_DIR_PATH = System.getProperty( "java.io.tmpdir" );
+  public static final String TEMP_DIR_PATH =
+      System.getProperty("java.io.tmpdir");
 
-    private List<File> filesToDelete = new ArrayList<>();
+  private List<File> filesToDelete = new ArrayList<>();
 
-    private final String baseFilename;
+  private final String baseFilename;
 
-    private final String fileSuffix;
+  private final String fileSuffix;
 
-    private StackTraceElement callerInfo;
+  private StackTraceElement callerInfo;
 
-    private Thread cleanupWarning;
+  private Thread cleanupWarning;
 
-    private boolean warnAboutCleanup = false;
+  private boolean warnAboutCleanup = false;
 
-    public TestFileManager( String baseFilename, String fileSuffix )
-    {
-        this.baseFilename = baseFilename;
-        this.fileSuffix = fileSuffix;
+  public TestFileManager(String baseFilename, String fileSuffix) {
+    this.baseFilename = baseFilename;
+    this.fileSuffix = fileSuffix;
 
-        initializeCleanupMonitoring();
+    initializeCleanupMonitoring();
+  }
+
+  private void initializeCleanupMonitoring() {
+    callerInfo = new NullPointerException().getStackTrace()[2];
+
+    Runnable warning = this::maybeWarnAboutCleanUp;
+
+    cleanupWarning = new Thread(warning);
+
+    Runtime.getRuntime().addShutdownHook(cleanupWarning);
+  }
+
+  private void maybeWarnAboutCleanUp() {
+    if (warnAboutCleanup) {
+      System.out.println("[WARNING] TestFileManager from: " +
+                         callerInfo.getClassName() + " not cleaned up!");
+    }
+  }
+
+  public void markForDeletion(File toDelete) {
+    filesToDelete.add(toDelete);
+    warnAboutCleanup = true;
+  }
+
+  public synchronized File createTempDir() {
+    try {
+      Thread.sleep(20);
+    } catch (InterruptedException e) {
+      // ignore
     }
 
-    private void initializeCleanupMonitoring()
-    {
-        callerInfo = new NullPointerException().getStackTrace()[2];
+    File dir =
+        new File(TEMP_DIR_PATH, baseFilename + System.currentTimeMillis());
 
-        Runnable warning = this::maybeWarnAboutCleanUp;
+    dir.mkdirs();
+    markForDeletion(dir);
 
-        cleanupWarning = new Thread( warning );
+    return dir;
+  }
 
-        Runtime.getRuntime().addShutdownHook( cleanupWarning );
-    }
+  public synchronized File createTempFile() throws IOException {
+    File tempFile = File.createTempFile(baseFilename, fileSuffix);
+    tempFile.deleteOnExit();
+    markForDeletion(tempFile);
 
-    private void maybeWarnAboutCleanUp()
-    {
-        if ( warnAboutCleanup )
-        {
-            System.out.println( "[WARNING] TestFileManager from: " + callerInfo.getClassName() + " not cleaned up!" );
+    return tempFile;
+  }
+
+  public void cleanUp() throws IOException {
+    for (Iterator it = filesToDelete.iterator(); it.hasNext();) {
+      File file = (File)it.next();
+
+      if (file.exists()) {
+        if (file.isDirectory()) {
+          FileUtils.deleteDirectory(file);
+        } else {
+          file.delete();
         }
+      }
+
+      it.remove();
     }
 
-    public void markForDeletion( File toDelete )
-    {
-        filesToDelete.add( toDelete );
-        warnAboutCleanup = true;
+    warnAboutCleanup = false;
+  }
+
+  public void assertFileExistence(File dir, String filename,
+                                  boolean shouldExist) {
+    File file = new File(dir, filename);
+
+    if (shouldExist) {
+      Assert.assertTrue(file.exists());
+    } else {
+      Assert.assertFalse(file.exists());
     }
+  }
 
-    public synchronized File createTempDir()
-    {
-        try
-        {
-            Thread.sleep( 20 );
-        }
-        catch ( InterruptedException e )
-        {
-            // ignore
-        }
+  public void assertFileContents(File dir, String filename, String contentsTest,
+                                 String encoding) throws IOException {
+    assertFileExistence(dir, filename, true);
 
-        File dir = new File( TEMP_DIR_PATH, baseFilename + System.currentTimeMillis() );
+    File file = new File(dir, filename);
 
-        dir.mkdirs();
-        markForDeletion( dir );
+    String contents = FileUtils.fileRead(file, encoding);
 
-        return dir;
-    }
+    Assert.assertEquals(contentsTest, contents);
+  }
 
-    public synchronized File createTempFile()
-        throws IOException
-    {
-        File tempFile = File.createTempFile( baseFilename, fileSuffix );
-        tempFile.deleteOnExit();
-        markForDeletion( tempFile );
+  public File createFile(File dir, String filename, String contents,
+                         String encoding) throws IOException {
+    File file = new File(dir, filename);
 
-        return tempFile;
-    }
+    file.getParentFile().mkdirs();
 
-    public void cleanUp()
-        throws IOException
-    {
-        for ( Iterator it = filesToDelete.iterator(); it.hasNext(); )
-        {
-            File file = (File) it.next();
+    FileUtils.fileWrite(file.getPath(), encoding, contents);
 
-            if ( file.exists() )
-            {
-                if ( file.isDirectory() )
-                {
-                    FileUtils.deleteDirectory( file );
-                }
-                else
-                {
-                    file.delete();
-                }
-            }
+    markForDeletion(file);
 
-            it.remove();
-        }
+    return file;
+  }
 
-        warnAboutCleanup = false;
-    }
+  public String getFileContents(File file, String encoding) throws IOException {
+    return FileUtils.fileRead(file, encoding);
+  }
 
-    public void assertFileExistence( File dir, String filename, boolean shouldExist )
-    {
-        File file = new File( dir, filename );
+  protected void finalize() throws Throwable {
+    maybeWarnAboutCleanUp();
 
-        if ( shouldExist )
-        {
-            Assert.assertTrue( file.exists() );
-        }
-        else
-        {
-            Assert.assertFalse( file.exists() );
-        }
-    }
+    super.finalize();
+  }
 
-    public void assertFileContents( File dir, String filename, String contentsTest, String encoding )
-        throws IOException
-    {
-        assertFileExistence( dir, filename, true );
-
-        File file = new File( dir, filename );
-
-        String contents = FileUtils.fileRead( file, encoding );
-
-        Assert.assertEquals( contentsTest, contents );
-    }
-
-    public File createFile( File dir, String filename, String contents, String encoding )
-        throws IOException
-    {
-        File file = new File( dir, filename );
-
-        file.getParentFile().mkdirs();
-
-        FileUtils.fileWrite( file.getPath(), encoding, contents );
-
-        markForDeletion( file );
-
-        return file;
-    }
-
-    public String getFileContents( File file, String encoding )
-        throws IOException
-    {
-        return FileUtils.fileRead( file, encoding );
-    }
-
-    protected void finalize()
-        throws Throwable
-    {
-        maybeWarnAboutCleanUp();
-
-        super.finalize();
-    }
-
-    public File createFile( String filename, String content, String encoding )
-        throws IOException
-    {
-        File dir = createTempDir();
-        return createFile( dir, filename, content, encoding );
-    }
-
+  public File createFile(String filename, String content, String encoding)
+      throws IOException {
+    File dir = createTempDir();
+    return createFile(dir, filename, content, encoding);
+  }
 }

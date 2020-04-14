@@ -19,9 +19,6 @@ package org.apache.maven.lifecycle;
  * under the License.
  */
 
-import org.codehaus.plexus.logging.Logger;
-import org.codehaus.plexus.util.StringUtils;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -30,119 +27,103 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import javax.inject.Inject;
 import javax.inject.Named;
 import javax.inject.Singleton;
+import org.codehaus.plexus.logging.Logger;
+import org.codehaus.plexus.util.StringUtils;
 
 /**
  * @since 3.0
  * @author Jason van Zyl
  * @author Kristian Rosenvold
  */
-// TODO The configuration for the lifecycle needs to be externalized so that I can use the annotations properly for the
-// wiring and reference and external source for the lifecycle configuration.
+// TODO The configuration for the lifecycle needs to be externalized so that I
+// can use the annotations properly for the wiring and reference and external
+// source for the lifecycle configuration.
 @Named
 @Singleton
-public class DefaultLifecycles
-{
-    public static final String[] STANDARD_LIFECYCLES = { "default", "clean", "site" };
+public class DefaultLifecycles {
+  public static final String[] STANDARD_LIFECYCLES = {"default", "clean",
+                                                      "site"};
 
-    // @Configuration(source="org/apache/maven/lifecycle/lifecycles.xml")
+  // @Configuration(source="org/apache/maven/lifecycle/lifecycles.xml")
 
-    @Inject
-    private Map<String, Lifecycle> lifecycles;
+  @Inject private Map<String, Lifecycle> lifecycles;
 
-    @Inject
-    private Logger logger;
+  @Inject private Logger logger;
 
-    public DefaultLifecycles()
-    {
-    }
+  public DefaultLifecycles() {}
 
-    public DefaultLifecycles( Map<String, Lifecycle> lifecycles, Logger logger )
-    {
-        this.lifecycles = new LinkedHashMap<>();
-        this.logger = logger;
-        this.lifecycles = lifecycles;
-    }
+  public DefaultLifecycles(Map<String, Lifecycle> lifecycles, Logger logger) {
+    this.lifecycles = new LinkedHashMap<>();
+    this.logger = logger;
+    this.lifecycles = lifecycles;
+  }
 
-    public Lifecycle get( String key )
-    {
-        return getPhaseToLifecycleMap().get( key );
-    }
+  public Lifecycle get(String key) { return getPhaseToLifecycleMap().get(key); }
 
-    /**
-     * We use this to map all phases to the lifecycle that contains it. This is used so that a user can specify the
-     * phase they want to execute and we can easily determine what lifecycle we need to run.
-     *
-     * @return A map of lifecycles, indexed on id
-     */
-    public Map<String, Lifecycle> getPhaseToLifecycleMap()
-    {
-        // If people are going to make their own lifecycles then we need to tell people how to namespace them correctly
-        // so that they don't interfere with internally defined lifecycles.
+  /**
+   * We use this to map all phases to the lifecycle that contains it. This is
+   * used so that a user can specify the phase they want to execute and we can
+   * easily determine what lifecycle we need to run.
+   *
+   * @return A map of lifecycles, indexed on id
+   */
+  public Map<String, Lifecycle> getPhaseToLifecycleMap() {
+    // If people are going to make their own lifecycles then we need to tell
+    // people how to namespace them correctly so that they don't interfere with
+    // internally defined lifecycles.
 
-        HashMap<String, Lifecycle> phaseToLifecycleMap = new HashMap<>();
+    HashMap<String, Lifecycle> phaseToLifecycleMap = new HashMap<>();
 
-        for ( Lifecycle lifecycle : getLifeCycles() )
-        {
-            if ( logger.isDebugEnabled() )
-            {
-                logger.debug( "Lifecycle " + lifecycle );
-            }
+    for (Lifecycle lifecycle : getLifeCycles()) {
+      if (logger.isDebugEnabled()) {
+        logger.debug("Lifecycle " + lifecycle);
+      }
 
-            for ( String phase : lifecycle.getPhases() )
-            {
-                // The first definition wins.
-                if ( !phaseToLifecycleMap.containsKey( phase ) )
-                {
-                    phaseToLifecycleMap.put( phase, lifecycle );
-                }
-                else
-                {
-                    Lifecycle original = phaseToLifecycleMap.get( phase );
-                    logger.warn( "Duplicated lifecycle phase " + phase + ". Defined in " + original.getId()
-                        + " but also in " + lifecycle.getId() );
-                }
-            }
+      for (String phase : lifecycle.getPhases()) {
+        // The first definition wins.
+        if (!phaseToLifecycleMap.containsKey(phase)) {
+          phaseToLifecycleMap.put(phase, lifecycle);
+        } else {
+          Lifecycle original = phaseToLifecycleMap.get(phase);
+          logger.warn("Duplicated lifecycle phase " + phase + ". Defined in " +
+                      original.getId() + " but also in " + lifecycle.getId());
         }
-
-        return phaseToLifecycleMap;
+      }
     }
 
-    public List<Lifecycle> getLifeCycles()
-    {
-        // ensure canonical order of standard lifecycles
-        Map<String, Lifecycle> lifecycles = new LinkedHashMap<>( this.lifecycles );
+    return phaseToLifecycleMap;
+  }
 
-        LinkedHashSet<String> lifecycleNames = new LinkedHashSet<>( Arrays.asList( STANDARD_LIFECYCLES ) );
-        lifecycleNames.addAll( lifecycles.keySet() );
+  public List<Lifecycle> getLifeCycles() {
+    // ensure canonical order of standard lifecycles
+    Map<String, Lifecycle> lifecycles = new LinkedHashMap<>(this.lifecycles);
 
-        ArrayList<Lifecycle> result = new ArrayList<>();
-        for ( String name : lifecycleNames )
-        {
-            Lifecycle lifecycle = lifecycles.get( name );
-            if ( lifecycle.getId() == null )
-            {
-                throw new NullPointerException( "A lifecycle must have an id." );
-            }
-            result.add( lifecycle );
-        }
+    LinkedHashSet<String> lifecycleNames =
+        new LinkedHashSet<>(Arrays.asList(STANDARD_LIFECYCLES));
+    lifecycleNames.addAll(lifecycles.keySet());
 
-        return result;
+    ArrayList<Lifecycle> result = new ArrayList<>();
+    for (String name : lifecycleNames) {
+      Lifecycle lifecycle = lifecycles.get(name);
+      if (lifecycle.getId() == null) {
+        throw new NullPointerException("A lifecycle must have an id.");
+      }
+      result.add(lifecycle);
     }
 
-    public String getLifecyclePhaseList()
-    {
-        Set<String> phases = new LinkedHashSet<>();
+    return result;
+  }
 
-        for ( Lifecycle lifecycle : getLifeCycles() )
-        {
-            phases.addAll( lifecycle.getPhases() );
-        }
+  public String getLifecyclePhaseList() {
+    Set<String> phases = new LinkedHashSet<>();
 
-        return StringUtils.join( phases.iterator(), ", " );
+    for (Lifecycle lifecycle : getLifeCycles()) {
+      phases.addAll(lifecycle.getPhases());
     }
 
+    return StringUtils.join(phases.iterator(), ", ");
+  }
 }

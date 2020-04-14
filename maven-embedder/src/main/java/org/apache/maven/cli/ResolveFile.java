@@ -25,26 +25,17 @@ import java.nio.file.Paths;
 /**
  * Resolve relative file path against the given base directory
  */
-public class ResolveFile
-{
-    public static File resolveFile( File file, String baseDirectory )
-    {
-        if ( file == null )
-        {
-            return null;
-        }
-        else if ( file.isAbsolute() )
-        {
-            return file;
-        }
-        else if ( file.getPath().startsWith( File.separator ) )
-        {
-            // drive-relative Windows path
-            return file.getAbsoluteFile();
-        }
-        else
-        {
-            return Paths.get( baseDirectory, file.getPath() ).normalize().toFile();
-        }
+public class ResolveFile {
+  public static File resolveFile(File file, String baseDirectory) {
+    if (file == null) {
+      return null;
+    } else if (file.isAbsolute()) {
+      return file;
+    } else if (file.getPath().startsWith(File.separator)) {
+      // drive-relative Windows path
+      return file.getAbsoluteFile();
+    } else {
+      return Paths.get(baseDirectory, file.getPath()).normalize().toFile();
     }
+  }
 }

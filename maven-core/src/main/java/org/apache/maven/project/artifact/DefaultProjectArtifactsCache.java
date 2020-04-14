@@ -29,10 +29,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.RepositoryUtils;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.lifecycle.LifecycleExecutionException;
@@ -49,203 +47,182 @@ import org.eclipse.aether.repository.WorkspaceRepository;
  */
 @Named
 @Singleton
-public class DefaultProjectArtifactsCache
-    implements ProjectArtifactsCache
-{
-    /**
-     * CacheKey
-     */
-    protected static class CacheKey
-        implements Key
-    {
+public class DefaultProjectArtifactsCache implements ProjectArtifactsCache {
+  /**
+   * CacheKey
+   */
+  protected static class CacheKey implements Key {
 
-        private final String groupId;
-        
-        private final String artifactId;
-        
-        private final String version;
-        
-        private final Set<String> dependencyArtifacts;
+    private final String groupId;
 
-        private final WorkspaceRepository workspace;
+    private final String artifactId;
 
-        private final LocalRepository localRepo;
+    private final String version;
 
-        private final List<RemoteRepository> repositories;
-        
-        private final Set<String> collect;
-        
-        private final Set<String> resolve;
-        
-        private boolean aggregating;
+    private final Set<String> dependencyArtifacts;
 
-        private final int hashCode;
+    private final WorkspaceRepository workspace;
 
-        public CacheKey( MavenProject project, List<RemoteRepository> repositories,
-            Collection<String> scopesToCollect, Collection<String> scopesToResolve, boolean aggregating,
-            RepositorySystemSession session )
-        {
-            
-            groupId = project.getGroupId();
-            artifactId = project.getArtifactId();
-            version = project.getVersion();
-            
-            Set<String> deps = new LinkedHashSet<>();
-            if ( project.getDependencyArtifacts() != null )
-            {
-              for ( Artifact dep: project.getDependencyArtifacts() )
-              {
-                deps.add( dep.toString() );
-              }
-            }
-            dependencyArtifacts = Collections.unmodifiableSet( deps );
-            
-            workspace = RepositoryUtils.getWorkspace( session );
-            this.localRepo = session.getLocalRepository();
-            this.repositories = new ArrayList<>( repositories.size() );
-            for ( RemoteRepository repository : repositories )
-            {
-                if ( repository.isRepositoryManager() )
-                {
-                    this.repositories.addAll( repository.getMirroredRepositories() );
-                }
-                else
-                {
-                    this.repositories.add( repository );
-                }
-            }
-            collect = scopesToCollect == null
-                ? Collections.<String>emptySet() 
-                : Collections.unmodifiableSet( new HashSet<>( scopesToCollect ) );
-            resolve = scopesToResolve == null 
-                ? Collections.<String>emptySet() 
-                : Collections.unmodifiableSet( new HashSet<>( scopesToResolve ) );
-            this.aggregating = aggregating;
+    private final LocalRepository localRepo;
 
-            int hash = 17;
-            hash = hash * 31 + Objects.hashCode( groupId );
-            hash = hash * 31 + Objects.hashCode( artifactId );
-            hash = hash * 31 + Objects.hashCode( version );
-            hash = hash * 31 + Objects.hashCode( dependencyArtifacts );
-            hash = hash * 31 + Objects.hashCode( workspace );
-            hash = hash * 31 + Objects.hashCode( localRepo );
-            hash = hash * 31 + RepositoryUtils.repositoriesHashCode( repositories );
-            hash = hash * 31 + Objects.hashCode( collect );
-            hash = hash * 31 + Objects.hashCode( resolve );
-            hash = hash * 31 + Objects.hashCode( aggregating );
-            this.hashCode = hash;
+    private final List<RemoteRepository> repositories;
+
+    private final Set<String> collect;
+
+    private final Set<String> resolve;
+
+    private boolean aggregating;
+
+    private final int hashCode;
+
+    public CacheKey(MavenProject project, List<RemoteRepository> repositories,
+                    Collection<String> scopesToCollect,
+                    Collection<String> scopesToResolve, boolean aggregating,
+                    RepositorySystemSession session) {
+
+      groupId = project.getGroupId();
+      artifactId = project.getArtifactId();
+      version = project.getVersion();
+
+      Set<String> deps = new LinkedHashSet<>();
+      if (project.getDependencyArtifacts() != null) {
+        for (Artifact dep : project.getDependencyArtifacts()) {
+          deps.add(dep.toString());
         }
+      }
+      dependencyArtifacts = Collections.unmodifiableSet(deps);
 
-        @Override
-        public String toString()
-        {
-            return groupId + ":" + artifactId + ":" + version;
+      workspace = RepositoryUtils.getWorkspace(session);
+      this.localRepo = session.getLocalRepository();
+      this.repositories = new ArrayList<>(repositories.size());
+      for (RemoteRepository repository : repositories) {
+        if (repository.isRepositoryManager()) {
+          this.repositories.addAll(repository.getMirroredRepositories());
+        } else {
+          this.repositories.add(repository);
         }
+      }
+      collect =
+          scopesToCollect == null
+              ? Collections.<String>emptySet()
+              : Collections.unmodifiableSet(new HashSet<>(scopesToCollect));
+      resolve =
+          scopesToResolve == null
+              ? Collections.<String>emptySet()
+              : Collections.unmodifiableSet(new HashSet<>(scopesToResolve));
+      this.aggregating = aggregating;
 
-        @Override
-        public int hashCode()
-        {
-            return hashCode;
-        }
-
-        @Override
-        public boolean equals( Object o )
-        {
-            if ( o == this )
-            {
-                return true;
-            }
-
-            if ( !( o instanceof CacheKey ) )
-            {
-                return false;
-            }
-
-            CacheKey that = (CacheKey) o;
-
-            return Objects.equals( groupId, that.groupId ) && Objects.equals( artifactId, that.artifactId )
-                && Objects.equals( version, that.version )
-                && Objects.equals( dependencyArtifacts, that.dependencyArtifacts )
-                && Objects.equals( workspace, that.workspace ) 
-                && Objects.equals( localRepo, that.localRepo )
-                && RepositoryUtils.repositoriesEquals( repositories, that.repositories )
-                && Objects.equals( collect, that.collect ) 
-                && Objects.equals( resolve, that.resolve )
-                && aggregating == that.aggregating;
-        }
-    }
-
-    protected final Map<Key, CacheRecord> cache = new ConcurrentHashMap<>();
-
-    @Override
-    public Key createKey( MavenProject project, Collection<String> scopesToCollect,
-        Collection<String> scopesToResolve, boolean aggregating, RepositorySystemSession session )
-    {
-        return new CacheKey( project, project.getRemoteProjectRepositories(), scopesToCollect, scopesToResolve, 
-            aggregating, session );
+      int hash = 17;
+      hash = hash * 31 + Objects.hashCode(groupId);
+      hash = hash * 31 + Objects.hashCode(artifactId);
+      hash = hash * 31 + Objects.hashCode(version);
+      hash = hash * 31 + Objects.hashCode(dependencyArtifacts);
+      hash = hash * 31 + Objects.hashCode(workspace);
+      hash = hash * 31 + Objects.hashCode(localRepo);
+      hash = hash * 31 + RepositoryUtils.repositoriesHashCode(repositories);
+      hash = hash * 31 + Objects.hashCode(collect);
+      hash = hash * 31 + Objects.hashCode(resolve);
+      hash = hash * 31 + Objects.hashCode(aggregating);
+      this.hashCode = hash;
     }
 
     @Override
-    public CacheRecord get( Key key )
-        throws LifecycleExecutionException
-    {
-        CacheRecord cacheRecord = cache.get( key );
-
-        if ( cacheRecord != null && cacheRecord.getException() != null )
-        {
-            throw cacheRecord.getException();
-        }
-
-        return cacheRecord;
+    public String toString() {
+      return groupId + ":" + artifactId + ":" + version;
     }
 
     @Override
-    public CacheRecord put( Key key, Set<Artifact> projectArtifacts )
-    {
-        Objects.requireNonNull( projectArtifacts, "projectArtifacts cannot be null" );
-
-        assertUniqueKey( key );
-
-        CacheRecord record =
-            new CacheRecord( Collections.unmodifiableSet( new LinkedHashSet<>( projectArtifacts ) ) );
-
-        cache.put( key, record );
-
-        return record;
-    }
-
-    protected void assertUniqueKey( Key key )
-    {
-        if ( cache.containsKey( key ) )
-        {
-            throw new IllegalStateException( "Duplicate artifact resolution result for project " + key );
-        }
+    public int hashCode() {
+      return hashCode;
     }
 
     @Override
-    public CacheRecord put( Key key, LifecycleExecutionException exception )
-    {
-        Objects.requireNonNull( exception, "exception cannot be null" );
+    public boolean equals(Object o) {
+      if (o == this) {
+        return true;
+      }
 
-        assertUniqueKey( key );
+      if (!(o instanceof CacheKey)) {
+        return false;
+      }
 
-        CacheRecord record = new CacheRecord( exception );
+      CacheKey that = (CacheKey)o;
 
-        cache.put( key, record );
+      return Objects.equals(groupId, that.groupId) &&
+          Objects.equals(artifactId, that.artifactId) &&
+          Objects.equals(version, that.version) &&
+          Objects.equals(dependencyArtifacts, that.dependencyArtifacts) &&
+          Objects.equals(workspace, that.workspace) &&
+          Objects.equals(localRepo, that.localRepo) &&
+          RepositoryUtils.repositoriesEquals(repositories, that.repositories) &&
+          Objects.equals(collect, that.collect) &&
+          Objects.equals(resolve, that.resolve) &&
+          aggregating == that.aggregating;
+    }
+  }
 
-        return record;
+  protected final Map<Key, CacheRecord> cache = new ConcurrentHashMap<>();
+
+  @Override
+  public Key createKey(MavenProject project, Collection<String> scopesToCollect,
+                       Collection<String> scopesToResolve, boolean aggregating,
+                       RepositorySystemSession session) {
+    return new CacheKey(project, project.getRemoteProjectRepositories(),
+                        scopesToCollect, scopesToResolve, aggregating, session);
+  }
+
+  @Override
+  public CacheRecord get(Key key) throws LifecycleExecutionException {
+    CacheRecord cacheRecord = cache.get(key);
+
+    if (cacheRecord != null && cacheRecord.getException() != null) {
+      throw cacheRecord.getException();
     }
 
-    @Override
-    public void flush()
-    {
-        cache.clear();
-    }
+    return cacheRecord;
+  }
 
-    @Override
-    public void register( MavenProject project, Key cacheKey, CacheRecord record )
-    {
-        // default cache does not track record usage
-    }
+  @Override
+  public CacheRecord put(Key key, Set<Artifact> projectArtifacts) {
+    Objects.requireNonNull(projectArtifacts, "projectArtifacts cannot be null");
 
+    assertUniqueKey(key);
+
+    CacheRecord record = new CacheRecord(
+        Collections.unmodifiableSet(new LinkedHashSet<>(projectArtifacts)));
+
+    cache.put(key, record);
+
+    return record;
+  }
+
+  protected void assertUniqueKey(Key key) {
+    if (cache.containsKey(key)) {
+      throw new IllegalStateException(
+          "Duplicate artifact resolution result for project " + key);
+    }
+  }
+
+  @Override
+  public CacheRecord put(Key key, LifecycleExecutionException exception) {
+    Objects.requireNonNull(exception, "exception cannot be null");
+
+    assertUniqueKey(key);
+
+    CacheRecord record = new CacheRecord(exception);
+
+    cache.put(key, record);
+
+    return record;
+  }
+
+  @Override
+  public void flush() {
+    cache.clear();
+  }
+
+  @Override
+  public void register(MavenProject project, Key cacheKey, CacheRecord record) {
+    // default cache does not track record usage
+  }
 }

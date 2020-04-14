@@ -19,6 +19,12 @@ package org.apache.maven.rtinfo.internal;
  * under the License.
  */
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Properties;
+import javax.inject.Inject;
+import javax.inject.Named;
+import javax.inject.Singleton;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
 import org.apache.maven.rtinfo.RuntimeInformation;
@@ -29,110 +35,82 @@ import org.eclipse.aether.version.Version;
 import org.eclipse.aether.version.VersionConstraint;
 import org.eclipse.aether.version.VersionScheme;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Properties;
-
-import javax.inject.Inject;
-import javax.inject.Named;
-import javax.inject.Singleton;
-
 /**
  * Provides information about the current Maven runtime.
  */
 @Named
 @Singleton
-public class DefaultRuntimeInformation
-    implements RuntimeInformation
-{
+public class DefaultRuntimeInformation implements RuntimeInformation {
 
-    @Inject
-    private Logger logger;
+  @Inject private Logger logger;
 
-    private String mavenVersion;
+  private String mavenVersion;
 
-    public String getMavenVersion()
-    {
-        if ( mavenVersion == null )
-        {
-            Properties props = new Properties();
+  public String getMavenVersion() {
+    if (mavenVersion == null) {
+      Properties props = new Properties();
 
-            String resource = "META-INF/maven/org.apache.maven/maven-core/pom.properties";
+      String resource =
+          "META-INF/maven/org.apache.maven/maven-core/pom.properties";
 
-            try ( InputStream is = DefaultRuntimeInformation.class.getResourceAsStream( "/" + resource ) )
-            {
-                if ( is != null )
-                {
-                    props.load( is );
-                }
-                else
-                {
-                    logger.warn(
-                        "Could not locate " + resource + " on classpath, Maven runtime information not available" );
-                }
-            }
-            catch ( IOException e )
-            {
-                String msg = "Could not parse " + resource + ", Maven runtime information not available";
-                if ( logger.isDebugEnabled() )
-                {
-                    logger.warn( msg, e );
-                }
-                else
-                {
-                    logger.warn( msg );
-                }
-            }
-
-            String version = props.getProperty( "version", "" ).trim();
-
-            if ( !version.startsWith( "${" ) )
-            {
-                mavenVersion = version;
-            }
-            else
-            {
-                mavenVersion = "";
-            }
+      try (InputStream is = DefaultRuntimeInformation.class.getResourceAsStream(
+               "/" + resource)) {
+        if (is != null) {
+          props.load(is);
+        } else {
+          logger.warn("Could not locate " + resource +
+                      " on classpath, Maven runtime information not available");
         }
+      } catch (IOException e) {
+        String msg = "Could not parse " + resource +
+                     ", Maven runtime information not available";
+        if (logger.isDebugEnabled()) {
+          logger.warn(msg, e);
+        } else {
+          logger.warn(msg);
+        }
+      }
 
-        return mavenVersion;
+      String version = props.getProperty("version", "").trim();
+
+      if (!version.startsWith("${")) {
+        mavenVersion = version;
+      } else {
+        mavenVersion = "";
+      }
     }
 
-    public boolean isMavenVersion( String versionRange )
-    {
-        VersionScheme versionScheme = new GenericVersionScheme();
+    return mavenVersion;
+  }
 
-        Validate.notBlank( versionRange, "versionRange can neither be null, empty nor blank" );
+  public boolean isMavenVersion(String versionRange) {
+    VersionScheme versionScheme = new GenericVersionScheme();
 
-        VersionConstraint constraint;
-        try
-        {
-            constraint = versionScheme.parseVersionConstraint( versionRange );
-        }
-        catch ( InvalidVersionSpecificationException e )
-        {
-            throw new IllegalArgumentException( e.getMessage(), e );
-        }
+    Validate.notBlank(versionRange,
+                      "versionRange can neither be null, empty nor blank");
 
-        Version current;
-        try
-        {
-            String mavenVersion = getMavenVersion();
-            Validate.validState( StringUtils.isNotEmpty( mavenVersion ), "Could not determine current Maven version" );
-
-            current = versionScheme.parseVersion( mavenVersion );
-        }
-        catch ( InvalidVersionSpecificationException e )
-        {
-            throw new IllegalStateException( "Could not parse current Maven version: " + e.getMessage(), e );
-        }
-
-        if ( constraint.getRange() == null )
-        {
-            return constraint.getVersion().compareTo( current ) <= 0;
-        }
-        return constraint.containsVersion( current );
+    VersionConstraint constraint;
+    try {
+      constraint = versionScheme.parseVersionConstraint(versionRange);
+    } catch (InvalidVersionSpecificationException e) {
+      throw new IllegalArgumentException(e.getMessage(), e);
     }
 
+    Version current;
+    try {
+      String mavenVersion = getMavenVersion();
+      Validate.validState(StringUtils.isNotEmpty(mavenVersion),
+                          "Could not determine current Maven version");
+
+      current = versionScheme.parseVersion(mavenVersion);
+    } catch (InvalidVersionSpecificationException e) {
+      throw new IllegalStateException(
+          "Could not parse current Maven version: " + e.getMessage(), e);
+    }
+
+    if (constraint.getRange() == null) {
+      return constraint.getVersion().compareTo(current) <= 0;
+    }
+    return constraint.containsVersion(current);
+  }
 }

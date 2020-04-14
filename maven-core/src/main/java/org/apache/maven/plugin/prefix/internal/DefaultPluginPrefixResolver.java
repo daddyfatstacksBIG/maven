@@ -24,11 +24,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-
 import javax.inject.Inject;
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.artifact.repository.metadata.Metadata;
 import org.apache.maven.artifact.repository.metadata.io.MetadataReader;
 import org.apache.maven.model.Build;
@@ -62,236 +60,220 @@ import org.eclipse.aether.resolution.MetadataResult;
  */
 @Named
 @Singleton
-public class DefaultPluginPrefixResolver
-    implements PluginPrefixResolver
-{
+public class DefaultPluginPrefixResolver implements PluginPrefixResolver {
 
-    private static final String REPOSITORY_CONTEXT = "plugin";
+  private static final String REPOSITORY_CONTEXT = "plugin";
 
-    @Inject
-    private Logger logger;
+  @Inject private Logger logger;
 
-    @Inject
-    private BuildPluginManager pluginManager;
+  @Inject private BuildPluginManager pluginManager;
 
-    @Inject
-    private RepositorySystem repositorySystem;
+  @Inject private RepositorySystem repositorySystem;
 
-    @Inject
-    private MetadataReader metadataReader;
+  @Inject private MetadataReader metadataReader;
 
-    public PluginPrefixResult resolve( PluginPrefixRequest request )
-        throws NoPluginFoundForPrefixException
-    {
-        logger.debug( "Resolving plugin prefix " + request.getPrefix() + " from " + request.getPluginGroups() );
+  public PluginPrefixResult resolve(PluginPrefixRequest request)
+      throws NoPluginFoundForPrefixException {
+    logger.debug("Resolving plugin prefix " + request.getPrefix() + " from " +
+                 request.getPluginGroups());
 
-        PluginPrefixResult result = resolveFromProject( request );
+    PluginPrefixResult result = resolveFromProject(request);
 
-        if ( result == null )
-        {
-            result = resolveFromRepository( request );
+    if (result == null) {
+      result = resolveFromRepository(request);
 
-            if ( result == null )
-            {
-                throw new NoPluginFoundForPrefixException( request.getPrefix(), request.getPluginGroups(),
-                                                           request.getRepositorySession().getLocalRepository(),
-                                                           request.getRepositories() );
-            }
-            else if ( logger.isDebugEnabled() )
-            {
-                logger.debug( "Resolved plugin prefix " + request.getPrefix() + " to " + result.getGroupId() + ":"
-                    + result.getArtifactId() + " from repository "
-                    + ( result.getRepository() != null ? result.getRepository().getId() : "null" ) );
-            }
-        }
-        else if ( logger.isDebugEnabled() )
-        {
-            logger.debug( "Resolved plugin prefix " + request.getPrefix() + " to " + result.getGroupId() + ":"
-                + result.getArtifactId() + " from POM " + request.getPom() );
-        }
-
-        return result;
+      if (result == null) {
+        throw new NoPluginFoundForPrefixException(
+            request.getPrefix(), request.getPluginGroups(),
+            request.getRepositorySession().getLocalRepository(),
+            request.getRepositories());
+      } else if (logger.isDebugEnabled()) {
+        logger.debug("Resolved plugin prefix " + request.getPrefix() + " to " +
+                     result.getGroupId() + ":" + result.getArtifactId() +
+                     " from repository " +
+                     (result.getRepository() != null
+                          ? result.getRepository().getId()
+                          : "null"));
+      }
+    } else if (logger.isDebugEnabled()) {
+      logger.debug("Resolved plugin prefix " + request.getPrefix() + " to " +
+                   result.getGroupId() + ":" + result.getArtifactId() +
+                   " from POM " + request.getPom());
     }
 
-    private PluginPrefixResult resolveFromProject( PluginPrefixRequest request )
-    {
-        PluginPrefixResult result = null;
+    return result;
+  }
 
-        if ( request.getPom() != null && request.getPom().getBuild() != null )
-        {
-            Build build = request.getPom().getBuild();
+  private PluginPrefixResult resolveFromProject(PluginPrefixRequest request) {
+    PluginPrefixResult result = null;
 
-            result = resolveFromProject( request, build.getPlugins() );
+    if (request.getPom() != null && request.getPom().getBuild() != null) {
+      Build build = request.getPom().getBuild();
 
-            if ( result == null && build.getPluginManagement() != null )
-            {
-                result = resolveFromProject( request, build.getPluginManagement().getPlugins() );
-            }
-        }
+      result = resolveFromProject(request, build.getPlugins());
 
-        return result;
+      if (result == null && build.getPluginManagement() != null) {
+        result = resolveFromProject(request,
+                                    build.getPluginManagement().getPlugins());
+      }
     }
 
-    private PluginPrefixResult resolveFromProject( PluginPrefixRequest request, List<Plugin> plugins )
-    {
-        for ( Plugin plugin : plugins )
-        {
-            try
-            {
-                PluginDescriptor pluginDescriptor =
-                    pluginManager.loadPlugin( plugin, request.getRepositories(), request.getRepositorySession() );
+    return result;
+  }
 
-                if ( request.getPrefix().equals( pluginDescriptor.getGoalPrefix() ) )
-                {
-                    return new DefaultPluginPrefixResult( plugin );
-                }
-            }
-            catch ( Exception e )
-            {
-                if ( logger.isDebugEnabled() )
-                {
-                    logger.warn( "Failed to retrieve plugin descriptor for " + plugin.getId() + ": " + e.getMessage(),
-                                 e );
-                }
-                else
-                {
-                    logger.warn( "Failed to retrieve plugin descriptor for " + plugin.getId() + ": " + e.getMessage() );
-                }
-            }
+  private PluginPrefixResult resolveFromProject(PluginPrefixRequest request,
+                                                List<Plugin> plugins) {
+    for (Plugin plugin : plugins) {
+      try {
+        PluginDescriptor pluginDescriptor = pluginManager.loadPlugin(
+            plugin, request.getRepositories(), request.getRepositorySession());
+
+        if (request.getPrefix().equals(pluginDescriptor.getGoalPrefix())) {
+          return new DefaultPluginPrefixResult(plugin);
         }
-
-        return null;
+      } catch (Exception e) {
+        if (logger.isDebugEnabled()) {
+          logger.warn("Failed to retrieve plugin descriptor for " +
+                          plugin.getId() + ": " + e.getMessage(),
+                      e);
+        } else {
+          logger.warn("Failed to retrieve plugin descriptor for " +
+                      plugin.getId() + ": " + e.getMessage());
+        }
+      }
     }
 
-    private PluginPrefixResult resolveFromRepository( PluginPrefixRequest request )
-    {
-        RequestTrace trace = RequestTrace.newChild( null, request );
+    return null;
+  }
 
-        List<MetadataRequest> requests = new ArrayList<>();
+  private PluginPrefixResult
+  resolveFromRepository(PluginPrefixRequest request) {
+    RequestTrace trace = RequestTrace.newChild(null, request);
 
-        for ( String pluginGroup : request.getPluginGroups() )
-        {
-            org.eclipse.aether.metadata.Metadata metadata =
-                new DefaultMetadata( pluginGroup, "maven-metadata.xml", DefaultMetadata.Nature.RELEASE_OR_SNAPSHOT );
+    List<MetadataRequest> requests = new ArrayList<>();
 
-            requests.add( new MetadataRequest( metadata, null, REPOSITORY_CONTEXT ).setTrace( trace ) );
+    for (String pluginGroup : request.getPluginGroups()) {
+      org.eclipse.aether.metadata.Metadata metadata =
+          new DefaultMetadata(pluginGroup, "maven-metadata.xml",
+                              DefaultMetadata.Nature.RELEASE_OR_SNAPSHOT);
 
-            for ( RemoteRepository repository : request.getRepositories() )
-            {
-                requests.add( new MetadataRequest( metadata, repository, REPOSITORY_CONTEXT ).setTrace( trace ) );
-            }
-        }
+      requests.add(new MetadataRequest(metadata, null, REPOSITORY_CONTEXT)
+                       .setTrace(trace));
 
-        // initial try, use locally cached metadata
-
-        List<MetadataResult> results = repositorySystem.resolveMetadata( request.getRepositorySession(), requests );
-        requests.clear();
-
-        PluginPrefixResult result = processResults( request, trace, results, requests );
-
-        if ( result != null )
-        {
-            return result;
-        }
-
-        // second try, refetch all (possibly outdated) metadata that wasn't updated in the first attempt
-
-        if ( !request.getRepositorySession().isOffline() && !requests.isEmpty() )
-        {
-            DefaultRepositorySystemSession session =
-                new DefaultRepositorySystemSession( request.getRepositorySession() );
-            session.setUpdatePolicy( RepositoryPolicy.UPDATE_POLICY_ALWAYS );
-
-            results = repositorySystem.resolveMetadata( session, requests );
-
-            return processResults( request, trace, results, null );
-        }
-
-        return null;
+      for (RemoteRepository repository : request.getRepositories()) {
+        requests.add(
+            new MetadataRequest(metadata, repository, REPOSITORY_CONTEXT)
+                .setTrace(trace));
+      }
     }
 
-    private PluginPrefixResult processResults( PluginPrefixRequest request, RequestTrace trace,
-                                               List<MetadataResult> results, List<MetadataRequest> requests )
-    {
-        for ( MetadataResult res : results )
-        {
-            org.eclipse.aether.metadata.Metadata metadata = res.getMetadata();
+    // initial try, use locally cached metadata
 
-            if ( metadata != null )
-            {
-                ArtifactRepository repository = res.getRequest().getRepository();
-                if ( repository == null )
-                {
-                    repository = request.getRepositorySession().getLocalRepository();
-                }
+    List<MetadataResult> results = repositorySystem.resolveMetadata(
+        request.getRepositorySession(), requests);
+    requests.clear();
 
-                PluginPrefixResult result =
-                    resolveFromRepository( request, trace, metadata.getGroupId(), metadata, repository );
+    PluginPrefixResult result =
+        processResults(request, trace, results, requests);
 
-                if ( result != null )
-                {
-                    return result;
-                }
-            }
-
-            if ( requests != null && !res.isUpdated() )
-            {
-                requests.add( res.getRequest() );
-            }
-        }
-
-        return null;
+    if (result != null) {
+      return result;
     }
 
-    private PluginPrefixResult resolveFromRepository( PluginPrefixRequest request, RequestTrace trace,
-                                                      String pluginGroup,
-                                                      org.eclipse.aether.metadata.Metadata metadata,
-                                                      ArtifactRepository repository )
-    {
-        if ( metadata != null && metadata.getFile() != null && metadata.getFile().isFile() )
-        {
-            try
-            {
-                Map<String, ?> options = Collections.singletonMap( MetadataReader.IS_STRICT, Boolean.FALSE );
+    // second try, refetch all (possibly outdated) metadata that wasn't updated
+    // in the first attempt
 
-                Metadata pluginGroupMetadata = metadataReader.read( metadata.getFile(), options );
+    if (!request.getRepositorySession().isOffline() && !requests.isEmpty()) {
+      DefaultRepositorySystemSession session =
+          new DefaultRepositorySystemSession(request.getRepositorySession());
+      session.setUpdatePolicy(RepositoryPolicy.UPDATE_POLICY_ALWAYS);
 
-                List<org.apache.maven.artifact.repository.metadata.Plugin> plugins = pluginGroupMetadata.getPlugins();
+      results = repositorySystem.resolveMetadata(session, requests);
 
-                if ( plugins != null )
-                {
-                    for ( org.apache.maven.artifact.repository.metadata.Plugin plugin : plugins )
-                    {
-                        if ( request.getPrefix().equals( plugin.getPrefix() ) )
-                        {
-                            return new DefaultPluginPrefixResult( pluginGroup, plugin.getArtifactId(), repository );
-                        }
-                    }
-                }
-            }
-            catch ( IOException e )
-            {
-                invalidMetadata( request.getRepositorySession(), trace, metadata, repository, e );
-            }
-        }
-
-        return null;
+      return processResults(request, trace, results, null);
     }
 
-    private void invalidMetadata( RepositorySystemSession session, RequestTrace trace,
-                                  org.eclipse.aether.metadata.Metadata metadata, ArtifactRepository repository,
-                                  Exception exception )
-    {
-        RepositoryListener listener = session.getRepositoryListener();
-        if ( listener != null )
-        {
-            RepositoryEvent.Builder event = new RepositoryEvent.Builder( session, EventType.METADATA_INVALID );
-            event.setTrace( trace );
-            event.setMetadata( metadata );
-            event.setException( exception );
-            event.setRepository( repository );
-            listener.metadataInvalid( event.build() );
+    return null;
+  }
+
+  private PluginPrefixResult processResults(PluginPrefixRequest request,
+                                            RequestTrace trace,
+                                            List<MetadataResult> results,
+                                            List<MetadataRequest> requests) {
+    for (MetadataResult res : results) {
+      org.eclipse.aether.metadata.Metadata metadata = res.getMetadata();
+
+      if (metadata != null) {
+        ArtifactRepository repository = res.getRequest().getRepository();
+        if (repository == null) {
+          repository = request.getRepositorySession().getLocalRepository();
         }
+
+        PluginPrefixResult result = resolveFromRepository(
+            request, trace, metadata.getGroupId(), metadata, repository);
+
+        if (result != null) {
+          return result;
+        }
+      }
+
+      if (requests != null && !res.isUpdated()) {
+        requests.add(res.getRequest());
+      }
     }
 
+    return null;
+  }
+
+  private PluginPrefixResult
+  resolveFromRepository(PluginPrefixRequest request, RequestTrace trace,
+                        String pluginGroup,
+                        org.eclipse.aether.metadata.Metadata metadata,
+                        ArtifactRepository repository) {
+    if (metadata != null && metadata.getFile() != null &&
+        metadata.getFile().isFile()) {
+      try {
+        Map<String, ?> options =
+            Collections.singletonMap(MetadataReader.IS_STRICT, Boolean.FALSE);
+
+        Metadata pluginGroupMetadata =
+            metadataReader.read(metadata.getFile(), options);
+
+        List<org.apache.maven.artifact.repository.metadata.Plugin> plugins =
+            pluginGroupMetadata.getPlugins();
+
+        if (plugins != null) {
+          for (org.apache.maven.artifact.repository.metadata.Plugin plugin :
+               plugins) {
+            if (request.getPrefix().equals(plugin.getPrefix())) {
+              return new DefaultPluginPrefixResult(
+                  pluginGroup, plugin.getArtifactId(), repository);
+            }
+          }
+        }
+      } catch (IOException e) {
+        invalidMetadata(request.getRepositorySession(), trace, metadata,
+                        repository, e);
+      }
+    }
+
+    return null;
+  }
+
+  private void invalidMetadata(RepositorySystemSession session,
+                               RequestTrace trace,
+                               org.eclipse.aether.metadata.Metadata metadata,
+                               ArtifactRepository repository,
+                               Exception exception) {
+    RepositoryListener listener = session.getRepositoryListener();
+    if (listener != null) {
+      RepositoryEvent.Builder event =
+          new RepositoryEvent.Builder(session, EventType.METADATA_INVALID);
+      event.setTrace(trace);
+      event.setMetadata(metadata);
+      event.setException(exception);
+      event.setRepository(repository);
+      listener.metadataInvalid(event.build());
+    }
+  }
 }

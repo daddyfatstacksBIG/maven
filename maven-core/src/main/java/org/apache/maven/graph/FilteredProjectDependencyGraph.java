@@ -25,7 +25,6 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-
 import org.apache.maven.execution.ProjectDependencyGraph;
 import org.apache.maven.project.MavenProject;
 
@@ -34,83 +33,76 @@ import org.apache.maven.project.MavenProject;
  *
  * @author Benjamin Bentmann
  */
-class FilteredProjectDependencyGraph
-    implements ProjectDependencyGraph
-{
+class FilteredProjectDependencyGraph implements ProjectDependencyGraph {
 
-    private ProjectDependencyGraph projectDependencyGraph;
+  private ProjectDependencyGraph projectDependencyGraph;
 
-    private Map<MavenProject, ?> whiteList;
+  private Map<MavenProject, ?> whiteList;
 
-    private List<MavenProject> sortedProjects;
+  private List<MavenProject> sortedProjects;
 
-    /**
-     * Creates a new project dependency graph from the specified graph.
-     *
-     * @param projectDependencyGraph The project dependency graph to create a sub view from, must not be {@code null}.
-     * @param whiteList The projects on which the dependency view should focus, must not be {@code null}.
-     */
-    FilteredProjectDependencyGraph( ProjectDependencyGraph projectDependencyGraph,
-                                    Collection<? extends MavenProject> whiteList )
-    {
-        this.projectDependencyGraph =
-                Objects.requireNonNull( projectDependencyGraph, "projectDependencyGraph cannot be null" );
+  /**
+   * Creates a new project dependency graph from the specified graph.
+   *
+   * @param projectDependencyGraph The project dependency graph to create a sub
+   *     view from, must not be {@code null}.
+   * @param whiteList The projects on which the dependency view should focus,
+   *     must not be {@code null}.
+   */
+  FilteredProjectDependencyGraph(ProjectDependencyGraph projectDependencyGraph,
+                                 Collection<? extends MavenProject> whiteList) {
+    this.projectDependencyGraph = Objects.requireNonNull(
+        projectDependencyGraph, "projectDependencyGraph cannot be null");
 
-        this.whiteList = new IdentityHashMap<>();
+    this.whiteList = new IdentityHashMap<>();
 
-        for ( MavenProject project : whiteList )
-        {
-            this.whiteList.put( project, null );
-        }
+    for (MavenProject project : whiteList) {
+      this.whiteList.put(project, null);
+    }
+  }
+
+  /**
+   * @since 3.5.0
+   */
+  public List<MavenProject> getAllProjects() {
+    return this.projectDependencyGraph.getAllProjects();
+  }
+
+  public List<MavenProject> getSortedProjects() {
+    if (sortedProjects == null) {
+      sortedProjects = applyFilter(projectDependencyGraph.getSortedProjects());
     }
 
-    /**
-     * @since 3.5.0
-     */
-    public List<MavenProject> getAllProjects()
-    {
-        return this.projectDependencyGraph.getAllProjects();
+    return new ArrayList<>(sortedProjects);
+  }
+
+  public List<MavenProject> getDownstreamProjects(MavenProject project,
+                                                  boolean transitive) {
+    return applyFilter(
+        projectDependencyGraph.getDownstreamProjects(project, transitive));
+  }
+
+  public List<MavenProject> getUpstreamProjects(MavenProject project,
+                                                boolean transitive) {
+    return applyFilter(
+        projectDependencyGraph.getUpstreamProjects(project, transitive));
+  }
+
+  private List<MavenProject>
+  applyFilter(Collection<? extends MavenProject> projects) {
+    List<MavenProject> filtered = new ArrayList<>(projects.size());
+
+    for (MavenProject project : projects) {
+      if (whiteList.containsKey(project)) {
+        filtered.add(project);
+      }
     }
 
-    public List<MavenProject> getSortedProjects()
-    {
-        if ( sortedProjects == null )
-        {
-            sortedProjects = applyFilter( projectDependencyGraph.getSortedProjects() );
-        }
+    return filtered;
+  }
 
-        return new ArrayList<>( sortedProjects );
-    }
-
-    public List<MavenProject> getDownstreamProjects( MavenProject project, boolean transitive )
-    {
-        return applyFilter( projectDependencyGraph.getDownstreamProjects( project, transitive ) );
-    }
-
-    public List<MavenProject> getUpstreamProjects( MavenProject project, boolean transitive )
-    {
-        return applyFilter( projectDependencyGraph.getUpstreamProjects( project, transitive ) );
-    }
-
-    private List<MavenProject> applyFilter( Collection<? extends MavenProject> projects )
-    {
-        List<MavenProject> filtered = new ArrayList<>( projects.size() );
-
-        for ( MavenProject project : projects )
-        {
-            if ( whiteList.containsKey( project ) )
-            {
-                filtered.add( project );
-            }
-        }
-
-        return filtered;
-    }
-
-    @Override
-    public String toString()
-    {
-        return getSortedProjects().toString();
-    }
-
+  @Override
+  public String toString() {
+    return getSortedProjects().toString();
+  }
 }

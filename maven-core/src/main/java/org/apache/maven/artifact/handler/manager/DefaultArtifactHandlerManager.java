@@ -22,11 +22,9 @@ package org.apache.maven.artifact.handler.manager;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
 import javax.inject.Inject;
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import org.apache.maven.artifact.handler.ArtifactHandler;
 import org.apache.maven.artifact.handler.DefaultArtifactHandler;
 
@@ -35,46 +33,35 @@ import org.apache.maven.artifact.handler.DefaultArtifactHandler;
  */
 @Named
 @Singleton
-public class DefaultArtifactHandlerManager
-    implements ArtifactHandlerManager
-{
+public class DefaultArtifactHandlerManager implements ArtifactHandlerManager {
 
-    @Inject
-    private Map<String, ArtifactHandler> artifactHandlers;
+  @Inject private Map<String, ArtifactHandler> artifactHandlers;
 
-    private Map<String, ArtifactHandler> allHandlers = new ConcurrentHashMap<>();
+  private Map<String, ArtifactHandler> allHandlers = new ConcurrentHashMap<>();
 
-    public ArtifactHandler getArtifactHandler( String type )
-    {
-        ArtifactHandler handler = allHandlers.get( type );
+  public ArtifactHandler getArtifactHandler(String type) {
+    ArtifactHandler handler = allHandlers.get(type);
 
-        if ( handler == null )
-        {
-            handler = artifactHandlers.get( type );
+    if (handler == null) {
+      handler = artifactHandlers.get(type);
 
-            if ( handler == null )
-            {
-                handler = new DefaultArtifactHandler( type );
-            }
-            else
-            {
-                allHandlers.put( type, handler );
-            }
-        }
-
-        return handler;
+      if (handler == null) {
+        handler = new DefaultArtifactHandler(type);
+      } else {
+        allHandlers.put(type, handler);
+      }
     }
 
-    public void addHandlers( Map<String, ArtifactHandler> handlers )
-    {
-        // legacy support for maven-gpg-plugin:1.0
-        allHandlers.putAll( handlers );
-    }
+    return handler;
+  }
 
-    @Deprecated
-    public Set<String> getHandlerTypes()
-    {
-        return artifactHandlers.keySet();
-    }
+  public void addHandlers(Map<String, ArtifactHandler> handlers) {
+    // legacy support for maven-gpg-plugin:1.0
+    allHandlers.putAll(handlers);
+  }
 
+  @Deprecated
+  public Set<String> getHandlerTypes() {
+    return artifactHandlers.keySet();
+  }
 }

@@ -21,7 +21,6 @@ package org.apache.maven.artifact.resolver;
 
 import java.util.Iterator;
 import java.util.List;
-
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.artifact.repository.ArtifactRepositoryPolicy;
@@ -31,317 +30,262 @@ import org.apache.maven.artifact.repository.ArtifactRepositoryPolicy;
  *
  * @author <a href="mailto:brett@apache.org">Brett Porter</a>
  */
-public class AbstractArtifactResolutionException
-    extends Exception
-{
-    private String groupId;
+public class AbstractArtifactResolutionException extends Exception {
+  private String groupId;
 
-    private String artifactId;
+  private String artifactId;
 
-    private String version;
+  private String version;
 
-    private String type;
+  private String type;
 
-    private String classifier;
+  private String classifier;
 
-    private Artifact artifact;
+  private Artifact artifact;
 
-    private List<ArtifactRepository> remoteRepositories;
+  private List<ArtifactRepository> remoteRepositories;
 
-    private final String originalMessage;
+  private final String originalMessage;
 
-    private final String path;
+  private final String path;
 
-    static final String LS = System.lineSeparator();
+  static final String LS = System.lineSeparator();
 
-    @SuppressWarnings( "checkstyle:parameternumber" )
-    protected AbstractArtifactResolutionException( String message,
-                                                   String groupId,
-                                                   String artifactId,
-                                                   String version,
-                                                   String type,
-                                                   String classifier,
-                                                   List<ArtifactRepository> remoteRepositories,
-                                                   List<String> path )
-    {
-        this( message, groupId, artifactId, version, type, classifier, remoteRepositories, path, null );
+  @SuppressWarnings("checkstyle:parameternumber")
+  protected AbstractArtifactResolutionException(
+      String message, String groupId, String artifactId, String version,
+      String type, String classifier,
+      List<ArtifactRepository> remoteRepositories, List<String> path) {
+    this(message, groupId, artifactId, version, type, classifier,
+         remoteRepositories, path, null);
+  }
+
+  @SuppressWarnings("checkstyle:parameternumber")
+  protected AbstractArtifactResolutionException(
+      String message, String groupId, String artifactId, String version,
+      String type, String classifier,
+      List<ArtifactRepository> remoteRepositories, List<String> path,
+      Throwable t) {
+    super(constructMessageBase(message, groupId, artifactId, version, type,
+                               remoteRepositories, path),
+          t);
+
+    this.originalMessage = message;
+    this.groupId = groupId;
+    this.artifactId = artifactId;
+    this.type = type;
+    this.classifier = classifier;
+    this.version = version;
+    this.remoteRepositories = remoteRepositories;
+    this.path = constructArtifactPath(path, "");
+  }
+
+  protected AbstractArtifactResolutionException(String message,
+                                                Artifact artifact) {
+    this(message, artifact, null);
+  }
+
+  protected AbstractArtifactResolutionException(
+      String message, Artifact artifact,
+      List<ArtifactRepository> remoteRepositories) {
+    this(message, artifact, remoteRepositories, null);
+  }
+
+  protected AbstractArtifactResolutionException(
+      String message, Artifact artifact,
+      List<ArtifactRepository> remoteRepositories, Throwable t) {
+    this(message, artifact.getGroupId(), artifact.getArtifactId(),
+         artifact.getVersion(), artifact.getType(), artifact.getClassifier(),
+         remoteRepositories, artifact.getDependencyTrail(), t);
+    this.artifact = artifact;
+  }
+
+  public Artifact getArtifact() { return artifact; }
+
+  public String getGroupId() { return groupId; }
+
+  public String getArtifactId() { return artifactId; }
+
+  public String getVersion() { return version; }
+
+  public String getType() { return type; }
+
+  /** @return the classifier */
+  public String getClassifier() { return this.classifier; }
+
+  /** @return the path */
+  public String getPath() { return this.path; }
+
+  public List<ArtifactRepository> getRemoteRepositories() {
+    return remoteRepositories;
+  }
+
+  public String getOriginalMessage() { return originalMessage; }
+
+  protected static String constructArtifactPath(List<String> path,
+                                                String indentation) {
+    StringBuilder sb = new StringBuilder();
+
+    if (path != null) {
+      sb.append(LS);
+      sb.append(indentation);
+      sb.append("Path to dependency: ");
+      sb.append(LS);
+      int num = 1;
+      for (Iterator<String> i = path.iterator(); i.hasNext(); num++) {
+        sb.append(indentation);
+        sb.append('\t');
+        sb.append(num);
+        sb.append(") ");
+        sb.append(i.next());
+        sb.append(LS);
+      }
     }
 
-    @SuppressWarnings( "checkstyle:parameternumber" )
-    protected AbstractArtifactResolutionException( String message,
-                                                   String groupId,
-                                                   String artifactId,
-                                                   String version,
-                                                   String type,
-                                                   String classifier,
-                                                   List<ArtifactRepository> remoteRepositories,
-                                                   List<String> path,
-                                                   Throwable t )
-    {
-        super( constructMessageBase( message, groupId, artifactId, version, type, remoteRepositories, path ), t );
+    return sb.toString();
+  }
 
-        this.originalMessage = message;
-        this.groupId = groupId;
-        this.artifactId = artifactId;
-        this.type = type;
-        this.classifier = classifier;
-        this.version = version;
-        this.remoteRepositories = remoteRepositories;
-        this.path = constructArtifactPath( path, "" );
-    }
+  private static String
+  constructMessageBase(String message, String groupId, String artifactId,
+                       String version, String type,
+                       List<ArtifactRepository> remoteRepositories,
+                       List<String> path) {
+    StringBuilder sb = new StringBuilder();
 
-    protected AbstractArtifactResolutionException( String message,
-                                                   Artifact artifact )
-    {
-        this( message, artifact, null );
-    }
+    sb.append(message);
 
-    protected AbstractArtifactResolutionException( String message,
-                                                   Artifact artifact,
-                                                   List<ArtifactRepository> remoteRepositories )
-    {
-        this( message, artifact, remoteRepositories, null );
-    }
+    if (message == null ||
+        !message.contains("from the specified remote repositories:")) {
+      sb.append(LS);
+      sb.append("  ")
+          .append(groupId)
+          .append(':')
+          .append(artifactId)
+          .append(':')
+          .append(type)
+          .append(':')
+          .append(version);
+      sb.append(LS);
+      if (remoteRepositories != null) {
+        sb.append(LS);
+        sb.append("from the specified remote repositories:");
+        sb.append(LS).append("  ");
 
-    protected AbstractArtifactResolutionException( String message,
-                                                   Artifact artifact,
-                                                   List<ArtifactRepository> remoteRepositories,
-                                                   Throwable t )
-    {
-        this( message, artifact.getGroupId(), artifact.getArtifactId(), artifact.getVersion(), artifact.getType(),
-            artifact.getClassifier(), remoteRepositories, artifact.getDependencyTrail(), t );
-        this.artifact = artifact;
-    }
-
-    public Artifact getArtifact()
-    {
-        return artifact;
-    }
-
-    public String getGroupId()
-    {
-        return groupId;
-    }
-
-    public String getArtifactId()
-    {
-        return artifactId;
-    }
-
-    public String getVersion()
-    {
-        return version;
-    }
-
-    public String getType()
-    {
-        return type;
-    }
-
-    /** @return the classifier */
-    public String getClassifier()
-    {
-        return this.classifier;
-    }
-
-    /** @return the path */
-    public String getPath()
-    {
-        return this.path;
-    }
-
-    public List<ArtifactRepository> getRemoteRepositories()
-    {
-        return remoteRepositories;
-    }
-
-    public String getOriginalMessage()
-    {
-        return originalMessage;
-    }
-
-    protected static String constructArtifactPath( List<String> path,
-                                                   String indentation )
-    {
-        StringBuilder sb = new StringBuilder();
-
-        if ( path != null )
-        {
-            sb.append( LS );
-            sb.append( indentation );
-            sb.append( "Path to dependency: " );
-            sb.append( LS );
-            int num = 1;
-            for ( Iterator<String> i = path.iterator(); i.hasNext(); num++ )
-            {
-                sb.append( indentation );
-                sb.append( '\t' );
-                sb.append( num );
-                sb.append( ") " );
-                sb.append( i.next() );
-                sb.append( LS );
-            }
+        if (remoteRepositories.isEmpty()) {
+          sb.append("(none)");
         }
 
-        return sb.toString();
-    }
+        for (Iterator<ArtifactRepository> i = remoteRepositories.iterator();
+             i.hasNext();) {
+          ArtifactRepository remoteRepository = i.next();
 
-    private static String constructMessageBase( String message,
-                                                String groupId,
-                                                String artifactId,
-                                                String version,
-                                                String type,
-                                                List<ArtifactRepository> remoteRepositories,
-                                                List<String> path )
-    {
-        StringBuilder sb = new StringBuilder();
+          sb.append(remoteRepository.getId());
+          sb.append(" (");
+          sb.append(remoteRepository.getUrl());
 
-        sb.append( message );
+          ArtifactRepositoryPolicy releases = remoteRepository.getReleases();
+          if (releases != null) {
+            sb.append(", releases=").append(releases.isEnabled());
+          }
 
-        if ( message == null || !message.contains( "from the specified remote repositories:" ) )
-        {
-            sb.append( LS );
-            sb.append( "  " ).append( groupId ).append( ':' ).append( artifactId ).append( ':' ).append( type ).append(
-                ':' ).append( version );
-            sb.append( LS );
-            if ( remoteRepositories != null )
-            {
-                sb.append( LS );
-                sb.append( "from the specified remote repositories:" );
-                sb.append( LS ).append( "  " );
+          ArtifactRepositoryPolicy snapshots = remoteRepository.getSnapshots();
+          if (snapshots != null) {
+            sb.append(", snapshots=").append(snapshots.isEnabled());
+          }
 
-                if ( remoteRepositories.isEmpty() )
-                {
-                    sb.append( "(none)" );
-                }
-
-                for ( Iterator<ArtifactRepository> i = remoteRepositories.iterator(); i.hasNext(); )
-                {
-                    ArtifactRepository remoteRepository = i.next();
-
-                    sb.append( remoteRepository.getId() );
-                    sb.append( " (" );
-                    sb.append( remoteRepository.getUrl() );
-
-                    ArtifactRepositoryPolicy releases = remoteRepository.getReleases();
-                    if ( releases != null )
-                    {
-                        sb.append( ", releases=" ).append( releases.isEnabled() );
-                    }
-
-                    ArtifactRepositoryPolicy snapshots = remoteRepository.getSnapshots();
-                    if ( snapshots != null )
-                    {
-                        sb.append( ", snapshots=" ).append( snapshots.isEnabled() );
-                    }
-
-                    sb.append( ')' );
-                    if ( i.hasNext() )
-                    {
-                        sb.append( ',' ).append( LS ).append( "  " );
-                    }
-                }
-            }
-
-            sb.append( constructArtifactPath( path, "" ) );
-            sb.append( LS );
+          sb.append(')');
+          if (i.hasNext()) {
+            sb.append(',').append(LS).append("  ");
+          }
         }
+      }
 
-        return sb.toString();
+      sb.append(constructArtifactPath(path, ""));
+      sb.append(LS);
     }
 
-    @SuppressWarnings( "checkstyle:parameternumber" )
-    protected static String constructMissingArtifactMessage( String message,
-                                                             String indentation,
-                                                             String groupId,
-                                                             String artifactId,
-                                                             String version,
-                                                             String type,
-                                                             String classifier,
-                                                             String downloadUrl,
-                                                             List<String> path )
-    {
-        StringBuilder sb = new StringBuilder( message );
+    return sb.toString();
+  }
 
-        if ( !"pom".equals( type ) )
-        {
-            if ( downloadUrl != null )
-            {
-                sb.append( LS );
-                sb.append( LS );
-                sb.append( indentation );
-                sb.append( "Try downloading the file manually from: " );
-                sb.append( LS );
-                sb.append( indentation );
-                sb.append( "    " );
-                sb.append( downloadUrl );
-            }
-            else
-            {
-                sb.append( LS );
-                sb.append( LS );
-                sb.append( indentation );
-                sb.append( "Try downloading the file manually from the project website." );
-            }
+  @SuppressWarnings("checkstyle:parameternumber")
+  protected static String constructMissingArtifactMessage(
+      String message, String indentation, String groupId, String artifactId,
+      String version, String type, String classifier, String downloadUrl,
+      List<String> path) {
+    StringBuilder sb = new StringBuilder(message);
 
-            sb.append( LS );
-            sb.append( LS );
-            sb.append( indentation );
-            sb.append( "Then, install it using the command: " );
-            sb.append( LS );
-            sb.append( indentation );
-            sb.append( "    mvn install:install-file -DgroupId=" );
-            sb.append( groupId );
-            sb.append( " -DartifactId=" );
-            sb.append( artifactId );
-            sb.append( " -Dversion=" );
-            sb.append( version );
+    if (!"pom".equals(type)) {
+      if (downloadUrl != null) {
+        sb.append(LS);
+        sb.append(LS);
+        sb.append(indentation);
+        sb.append("Try downloading the file manually from: ");
+        sb.append(LS);
+        sb.append(indentation);
+        sb.append("    ");
+        sb.append(downloadUrl);
+      } else {
+        sb.append(LS);
+        sb.append(LS);
+        sb.append(indentation);
+        sb.append(
+            "Try downloading the file manually from the project website.");
+      }
 
-            //insert classifier only if it was used in the artifact
-            if ( classifier != null && !classifier.equals( "" ) )
-            {
-                sb.append( " -Dclassifier=" );
-                sb.append( classifier );
-            }
-            sb.append( " -Dpackaging=" );
-            sb.append( type );
-            sb.append( " -Dfile=/path/to/file" );
-            sb.append( LS );
+      sb.append(LS);
+      sb.append(LS);
+      sb.append(indentation);
+      sb.append("Then, install it using the command: ");
+      sb.append(LS);
+      sb.append(indentation);
+      sb.append("    mvn install:install-file -DgroupId=");
+      sb.append(groupId);
+      sb.append(" -DartifactId=");
+      sb.append(artifactId);
+      sb.append(" -Dversion=");
+      sb.append(version);
 
-            // If people want to deploy it
-            sb.append( LS );
-            sb.append( indentation );
-            sb.append( "Alternatively, if you host your own repository you can deploy the file there: " );
-            sb.append( LS );
-            sb.append( indentation );
-            sb.append( "    mvn deploy:deploy-file -DgroupId=" );
-            sb.append( groupId );
-            sb.append( " -DartifactId=" );
-            sb.append( artifactId );
-            sb.append( " -Dversion=" );
-            sb.append( version );
+      // insert classifier only if it was used in the artifact
+      if (classifier != null && !classifier.equals("")) {
+        sb.append(" -Dclassifier=");
+        sb.append(classifier);
+      }
+      sb.append(" -Dpackaging=");
+      sb.append(type);
+      sb.append(" -Dfile=/path/to/file");
+      sb.append(LS);
 
-            //insert classifier only if it was used in the artifact
-            if ( classifier != null && !classifier.equals( "" ) )
-            {
-                sb.append( " -Dclassifier=" );
-                sb.append( classifier );
-            }
-            sb.append( " -Dpackaging=" );
-            sb.append( type );
-            sb.append( " -Dfile=/path/to/file" );
-            sb.append( " -Durl=[url] -DrepositoryId=[id]" );
-            sb.append( LS );
-        }
+      // If people want to deploy it
+      sb.append(LS);
+      sb.append(indentation);
+      sb.append(
+          "Alternatively, if you host your own repository you can deploy the file there: ");
+      sb.append(LS);
+      sb.append(indentation);
+      sb.append("    mvn deploy:deploy-file -DgroupId=");
+      sb.append(groupId);
+      sb.append(" -DartifactId=");
+      sb.append(artifactId);
+      sb.append(" -Dversion=");
+      sb.append(version);
 
-        sb.append( constructArtifactPath( path, indentation ) );
-        sb.append( LS );
-
-        return sb.toString();
+      // insert classifier only if it was used in the artifact
+      if (classifier != null && !classifier.equals("")) {
+        sb.append(" -Dclassifier=");
+        sb.append(classifier);
+      }
+      sb.append(" -Dpackaging=");
+      sb.append(type);
+      sb.append(" -Dfile=/path/to/file");
+      sb.append(" -Durl=[url] -DrepositoryId=[id]");
+      sb.append(LS);
     }
 
-    public String getArtifactPath()
-    {
-        return path;
-    }
+    sb.append(constructArtifactPath(path, indentation));
+    sb.append(LS);
+
+    return sb.toString();
+  }
+
+  public String getArtifactPath() { return path; }
 }

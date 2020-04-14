@@ -19,10 +19,6 @@ package org.slf4j.impl;
  * under the License.
  */
 
-import org.apache.maven.logwrapper.LogLevelRecorder;
-import org.junit.Test;
-import org.slf4j.Logger;
-
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -31,60 +27,62 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
-public class MavenLoggerFactoryTest
-{
-    @Test
-    public void createsSimpleLogger()
-    {
-        MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
+import org.apache.maven.logwrapper.LogLevelRecorder;
+import org.junit.Test;
+import org.slf4j.Logger;
 
-        Logger logger = mavenLoggerFactory.getLogger( "Test" );
+public class MavenLoggerFactoryTest {
+  @Test
+  public void createsSimpleLogger() {
+    MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
 
-        assertThat( logger, instanceOf( MavenSimpleLogger.class ) );
-    }
+    Logger logger = mavenLoggerFactory.getLogger("Test");
 
-    @Test
-    public void loggerCachingWorks()
-    {
-        MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
+    assertThat(logger, instanceOf(MavenSimpleLogger.class));
+  }
 
-        Logger logger = mavenLoggerFactory.getLogger( "Test" );
-        Logger logger2 = mavenLoggerFactory.getLogger( "Test" );
-        Logger differentLogger = mavenLoggerFactory.getLogger( "TestWithDifferentName" );
+  @Test
+  public void loggerCachingWorks() {
+    MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
 
-        assertNotNull( logger );
-        assertNotNull( differentLogger );
-        assertSame( logger, logger2 );
-        assertNotSame( logger, differentLogger );
-    }
+    Logger logger = mavenLoggerFactory.getLogger("Test");
+    Logger logger2 = mavenLoggerFactory.getLogger("Test");
+    Logger differentLogger =
+        mavenLoggerFactory.getLogger("TestWithDifferentName");
 
-    @Test
-    public void reportsWhenFailOnSeverityThresholdHasBeenHit()
-    {
-        MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
-        mavenLoggerFactory.setLogLevelRecorder( new LogLevelRecorder( "ERROR" ) );
+    assertNotNull(logger);
+    assertNotNull(differentLogger);
+    assertSame(logger, logger2);
+    assertNotSame(logger, differentLogger);
+  }
 
-        assertTrue( mavenLoggerFactory.getLogLevelRecorder().isPresent() );
-        LogLevelRecorder logLevelRecorder = mavenLoggerFactory.getLogLevelRecorder().get();
+  @Test
+  public void reportsWhenFailOnSeverityThresholdHasBeenHit() {
+    MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
+    mavenLoggerFactory.setLogLevelRecorder(new LogLevelRecorder("ERROR"));
 
-        MavenFailOnSeverityLogger logger = (MavenFailOnSeverityLogger) mavenLoggerFactory.getLogger( "Test" );
-        assertFalse( logLevelRecorder.metThreshold() );
+    assertTrue(mavenLoggerFactory.getLogLevelRecorder().isPresent());
+    LogLevelRecorder logLevelRecorder =
+        mavenLoggerFactory.getLogLevelRecorder().get();
 
-        logger.warn( "This should not hit the fail threshold" );
-        assertFalse( logLevelRecorder.metThreshold() );
+    MavenFailOnSeverityLogger logger =
+        (MavenFailOnSeverityLogger)mavenLoggerFactory.getLogger("Test");
+    assertFalse(logLevelRecorder.metThreshold());
 
-        logger.error( "This should hit the fail threshold" );
-        assertTrue( logLevelRecorder.metThreshold() );
+    logger.warn("This should not hit the fail threshold");
+    assertFalse(logLevelRecorder.metThreshold());
 
-        logger.warn( "This should not reset the fail threshold" );
-        assertTrue( logLevelRecorder.metThreshold() );
-    }
+    logger.error("This should hit the fail threshold");
+    assertTrue(logLevelRecorder.metThreshold());
 
-    @Test( expected = IllegalStateException.class )
-    public void failOnSeverityThresholdCanOnlyBeSetOnce()
-    {
-        MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
-        mavenLoggerFactory.setLogLevelRecorder( new LogLevelRecorder( "WARN" ) );
-        mavenLoggerFactory.setLogLevelRecorder( new LogLevelRecorder( "ERROR" ) );
-    }
+    logger.warn("This should not reset the fail threshold");
+    assertTrue(logLevelRecorder.metThreshold());
+  }
+
+  @Test(expected = IllegalStateException.class)
+  public void failOnSeverityThresholdCanOnlyBeSetOnce() {
+    MavenLoggerFactory mavenLoggerFactory = new MavenLoggerFactory();
+    mavenLoggerFactory.setLogLevelRecorder(new LogLevelRecorder("WARN"));
+    mavenLoggerFactory.setLogLevelRecorder(new LogLevelRecorder("ERROR"));
+  }
 }
