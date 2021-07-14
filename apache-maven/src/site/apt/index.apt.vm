@@ -16,14 +16,25 @@
 ~~ under the License.
 
  -----
- Introduction
+ ${project.name}
  -----
  Hervé Boutemy
  -----
- 2021-04-04
+ 2021-07-11
  -----
 
-Maven Dependencies BOM
+${project.name}
 
-  Bill Of Materials for Apache Maven dependencies, to easily use as dependencyManagement import: see {{{./dependency-management.html}Dependency Management report}}.
+ ${project.description}
 
+* References
+
+ * <<<mvn>>> invocation can be customised through:
+
+   * <<</etc/mavenrc>>> and <<<~/.mavenrc>>> scripts on Unix,
+
+   * <<<~\mavenrc_pre.bat>>> and <<<~\mavenrc_pre.cmd>>> scripts on Windows,
+
+   []
+
+  and these scripts calls can be disabled by setting <<<MAVEN_SKIP_RC>>> environment variable. 

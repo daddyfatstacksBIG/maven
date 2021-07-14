@@ -49,8 +49,7 @@ import org.apache.maven.artifact.versioning.InvalidVersionSpecificationException
 import org.apache.maven.artifact.versioning.OverConstrainedVersionException;
 import org.apache.maven.artifact.versioning.VersionRange;
 import org.apache.maven.repository.legacy.metadata.MetadataResolutionRequest;
-import org.apache.maven.test.PlexusTest;
-import org.junit.jupiter.api.AfterEach;
+import org.codehaus.plexus.testing.PlexusTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -151,7 +150,7 @@ public class DefaultArtifactCollectorTest
         ArtifactSpec f = c1.addDependency( "f", "1.0" );
 
         ArtifactResolutionResult res = collect( createSet( new Object[] { a.artifact, e.artifact } ) );
-        assertEquals( createSet( new Object[] { a.artifact, b.artifact, e.artifact, c1.artifact, f.artifact } ), 
+        assertEquals( createSet( new Object[] { a.artifact, b.artifact, e.artifact, c1.artifact, f.artifact } ),
                       res.getArtifacts(), "Check artifact list" );
         assertEquals( "1.0", getArtifact( "c", res.getArtifacts() ).getVersion(), "Check version" );
     }

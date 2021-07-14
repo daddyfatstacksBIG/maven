@@ -119,6 +119,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static java.util.Comparator.comparing;
+import static org.apache.maven.cli.CLIManager.COLOR;
 import static org.apache.maven.cli.ResolveFile.resolveFile;
 import static org.apache.maven.shared.utils.logging.MessageUtils.buffer;
 
@@ -171,6 +172,8 @@ public class MavenCli
     private DefaultSecDispatcher dispatcher;
 
     private Map<String, ConfigurationProcessor> configurationProcessors;
+
+    private CLIManager cliManager;
 
     public MavenCli()
     {
@@ -284,6 +287,7 @@ public class MavenCli
             cli( cliRequest );
             properties( cliRequest );
             logging( cliRequest );
+            informativeCommands( cliRequest );
             version( cliRequest );
             localContainer = container( cliRequest );
             commands( cliRequest );
@@ -373,7 +377,7 @@ public class MavenCli
         //
         slf4jLogger = new Slf4jStdoutLogger();
 
-        CLIManager cliManager = new CLIManager();
+        cliManager = new CLIManager();
 
         List<String> args = new ArrayList<>();
         CommandLine mavenConfig = null;
@@ -423,7 +427,10 @@ public class MavenCli
             cliManager.displayHelp( System.out );
             throw e;
         }
+    }
 
+    private void informativeCommands( CliRequest cliRequest ) throws ExitException
+    {
         if ( cliRequest.commandLine.hasOption( CLIManager.HELP ) )
         {
             cliManager.displayHelp( System.out );
@@ -432,7 +439,14 @@ public class MavenCli
 
         if ( cliRequest.commandLine.hasOption( CLIManager.VERSION ) )
         {
-            System.out.println( CLIReportingUtils.showVersion() );
+            if ( cliRequest.commandLine.hasOption( CLIManager.QUIET ) )
+            {
+                System.out.println( CLIReportingUtils.showVersionMinimal() );
+            }
+            else
+            {
+                System.out.println( CLIReportingUtils.showVersion() );
+            }
             throw new ExitException( 0 );
         }
     }
@@ -504,18 +518,19 @@ public class MavenCli
 
         // LOG COLOR
         String styleColor = cliRequest.getUserProperties().getProperty( STYLE_COLOR_PROPERTY, "auto" );
-        if ( "always".equals( styleColor ) )
+        styleColor = cliRequest.commandLine.getOptionValue( COLOR, styleColor );
+        if ( "always".equals( styleColor ) || "yes".equals( styleColor ) || "force".equals( styleColor ) )
         {
             MessageUtils.setColorEnabled( true );
         }
-        else if ( "never".equals( styleColor ) )
+        else if ( "never".equals( styleColor ) || "no".equals( styleColor ) || "none".equals( styleColor ) )
         {
             MessageUtils.setColorEnabled( false );
         }
-        else if ( !"auto".equals( styleColor ) )
+        else if ( !"auto".equals( styleColor ) && !"tty".equals( styleColor ) && !"if-tty".equals( styleColor ) )
         {
-            throw new IllegalArgumentException( "Invalid color configuration option [" + styleColor
-                + "]. Supported values are (auto|always|never)." );
+            throw new IllegalArgumentException( "Invalid color configuration value '" + styleColor
+                + "'. Supported are 'auto', 'always', 'never'." );
         }
         else if ( cliRequest.commandLine.hasOption( CLIManager.BATCH_MODE )
             || cliRequest.commandLine.hasOption( CLIManager.LOG_FILE ) )

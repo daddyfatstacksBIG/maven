@@ -1,4 +1,4 @@
-package org.apache.maven.test;
+package org.apache.maven.plugin.internal;
 
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
@@ -9,7 +9,7 @@ package org.apache.maven.test;
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
@@ -19,20 +19,16 @@ package org.apache.maven.test;
  * under the License.
  */
 
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
-
-import org.junit.jupiter.api.extension.ExtendWith;
+import java.util.List;
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.plugin.descriptor.PluginDescriptor;
 
 /**
- * Plexus test
+ * MavenPluginValidator
  */
-@Retention( RetentionPolicy.RUNTIME )
-@ExtendWith( PlexusExtension.class )
-@Target( ElementType.TYPE )
-public @interface PlexusTest
+interface MavenPluginValidator
 {
+
+    void validate( Artifact pluginArtfiact, PluginDescriptor pluginDescriptor, List<String> errors );
 
 }
