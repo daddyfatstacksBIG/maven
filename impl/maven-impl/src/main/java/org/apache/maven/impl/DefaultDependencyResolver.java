@@ -1,0 +1,401 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.impl;
+
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+
+import org.apache.maven.api.Artifact;
+import org.apache.maven.api.ArtifactCoordinates;
+import org.apache.maven.api.DependencyCoordinates;
+import org.apache.maven.api.DependencyScope;
+import org.apache.maven.api.Node;
+import org.apache.maven.api.PathScope;
+import org.apache.maven.api.PathType;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.RemoteRepository;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.Version;
+import org.apache.maven.api.annotations.Nonnull;
+import org.apache.maven.api.annotations.Nullable;
+import org.apache.maven.api.di.Named;
+import org.apache.maven.api.di.Singleton;
+import org.apache.maven.api.services.ArtifactResolver;
+import org.apache.maven.api.services.ArtifactResolverException;
+import org.apache.maven.api.services.ArtifactResolverResult;
+import org.apache.maven.api.services.DependencyResolver;
+import org.apache.maven.api.services.DependencyResolverException;
+import org.apache.maven.api.services.DependencyResolverRequest;
+import org.apache.maven.api.services.DependencyResolverResult;
+import org.apache.maven.api.services.ProjectManager;
+import org.eclipse.aether.DefaultRepositorySystemSession;
+import org.eclipse.aether.RepositorySystemSession;
+import org.eclipse.aether.collection.CollectRequest;
+import org.eclipse.aether.collection.CollectResult;
+import org.eclipse.aether.collection.DependencyCollectionException;
+import org.eclipse.aether.graph.DependencyFilter;
+import org.eclipse.aether.graph.DependencyNode;
+import org.eclipse.aether.scope.ResolutionScope;
+import org.eclipse.aether.util.graph.manager.DependencyManagerUtils;
+import org.eclipse.aether.util.graph.transformer.ConflictResolver;
+
+import static java.util.Objects.requireNonNull;
+import static org.apache.maven.impl.ImplUtils.cast;
+import static org.apache.maven.impl.ImplUtils.map;
+
+@Named
+@Singleton
+public class DefaultDependencyResolver implements DependencyResolver {
+
+    /**
+     * Cache of information about the modules contained in a path element.
+     * Keys are the Java versions targeted by the project.
+     *
+     * <p><b>TODO:</b> This field should not be in this class, because the cache should be global to the session.
+     * This field exists here only temporarily, until clarified where to store session-wide caches.</p>
+     */
+    private final Map<Runtime.Version, PathModularizationCache> moduleCaches;
+
+    /**
+     * Creates an initially empty resolver.
+     */
+    public DefaultDependencyResolver() {
+        // TODO: the cache should not be instantiated here, but should rather be session-wide.
+        moduleCaches = new ConcurrentHashMap<>();
+    }
+
+    /**
+     * {@return the cache for the given request}.
+     *
+     * @param  request the request for which to get the target version
+     * @throws IllegalArgumentException if the version string cannot be interpreted as a valid version
+     */
+    private PathModularizationCache moduleCache(DependencyResolverRequest request) {
+        return moduleCaches.computeIfAbsent(getTargetVersion(request), PathModularizationCache::new);
+    }
+
+    /**
+     * Returns the target version of the given request as a Java version object.
+     *
+     * @param  request the request for which to get the target version
+     * @return the target version as a Java object
+     * @throws IllegalArgumentException if the version string cannot be interpreted as a valid version
+     */
+    static Runtime.Version getTargetVersion(DependencyResolverRequest request) {
+        Version target = request.getTargetVersion();
+        return (target != null) ? Runtime.Version.parse(target.toString()) : Runtime.version();
+    }
+
+    @Nonnull
+    @Override
+    public DependencyResolverResult collect(@Nonnull DependencyResolverRequest request)
+            throws DependencyResolverException, IllegalArgumentException {
+        requireNonNull(request, "request");
+        InternalSession session = InternalSession.from(request.getSession());
+        RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(session, request);
+        try {
+            return session.request(request, this::doCollect);
+        } finally {
+            RequestTraceHelper.exit(trace);
+        }
+    }
+
+    private DependencyResolverResult doCollect(DependencyResolverRequest request) {
+        InternalSession session = InternalSession.from(request.getSession());
+        org.apache.maven.api.services.RequestTrace trace = RequestTraceHelper.getCurrentTrace(session);
+        Artifact rootArtifact;
+        DependencyCoordinates root;
+        Collection<DependencyCoordinates> dependencies;
+        Collection<DependencyCoordinates> managedDependencies;
+        List<RemoteRepository> remoteRepositories;
+        if (request.getProject().isPresent()) {
+            Project project = request.getProject().get();
+            rootArtifact = project.getPomArtifact();
+            root = null;
+            // Caller-supplied dependencies take precedence to allow plugin-specific resolution in project context.
+            dependencies = request.getDependencies().isEmpty() ? project.getDependencies() : request.getDependencies();
+            managedDependencies = project.getManagedDependencies();
+            remoteRepositories = request.getRepositories() != null
+                    ? request.getRepositories()
+                    : session.getService(ProjectManager.class).getRemoteProjectRepositories(project);
+        } else {
+            rootArtifact = request.getRootArtifact().orElse(null);
+            root = request.getRoot().orElse(null);
+            dependencies = request.getDependencies();
+            managedDependencies = request.getManagedDependencies();
+            remoteRepositories =
+                    request.getRepositories() != null ? request.getRepositories() : session.getRemoteRepositories();
+        }
+        ResolutionScope resolutionScope = null;
+        if (request.getPathScope() != null) {
+            resolutionScope = session.getSession()
+                    .getScopeManager()
+                    .getResolutionScope(request.getPathScope().id())
+                    .orElseThrow();
+        }
+        List<org.eclipse.aether.graph.Dependency> resolverDependencies = session.toDependencies(dependencies, false);
+        List<org.eclipse.aether.graph.Dependency> resolverManagedDependencies =
+                session.toDependencies(managedDependencies, true);
+        if (request.getProject().isPresent() && !request.getDependencies().isEmpty()) {
+            resolverDependencies = applyDependencyManagement(resolverDependencies, resolverManagedDependencies);
+        }
+        CollectRequest collectRequest = new CollectRequest()
+                .setRootArtifact(rootArtifact != null ? session.toArtifact(rootArtifact) : null)
+                .setRoot(root != null ? session.toDependency(root, false) : null)
+                .setDependencies(resolverDependencies)
+                .setManagedDependencies(resolverManagedDependencies)
+                .setRepositories(session.toResolvingRepositories(remoteRepositories))
+                .setRequestContext(trace.context())
+                .setTrace(RequestTraceHelper.toResolver(trace));
+        collectRequest.setResolutionScope(resolutionScope);
+
+        RepositorySystemSession systemSession = session.getSession();
+        if (request.getVerbose()) {
+            systemSession = new DefaultRepositorySystemSession(systemSession)
+                    .setConfigProperty(ConflictResolver.CONFIG_PROP_VERBOSE, true)
+                    .setConfigProperty(DependencyManagerUtils.CONFIG_PROP_VERBOSE, true);
+        }
+
+        try {
+            final CollectResult result =
+                    session.getRepositorySystem().collectDependencies(systemSession, collectRequest);
+            return new DefaultDependencyResolverResult(
+                    request,
+                    moduleCache(request),
+                    result.getExceptions(),
+                    session.getNode(result.getRoot(), request.getVerbose()),
+                    0);
+        } catch (DependencyCollectionException e) {
+            String enhancedMessage = enhanceCollectionError(e, collectRequest);
+            throw new DependencyResolverException(enhancedMessage, e);
+        }
+    }
+
+    /**
+     * Applies dependency management to dependencies supplied outside the project model. Resolver applies managed
+     * dependencies only below the root's direct dependencies, while project model building normally performs this
+     * merge before resolution. Dependencies supplied by a plugin therefore need the same merge here.
+     */
+    static List<org.eclipse.aether.graph.Dependency> applyDependencyManagement(
+            Collection<org.eclipse.aether.graph.Dependency> dependencies,
+            Collection<org.eclipse.aether.graph.Dependency> managedDependencies) {
+        Map<String, org.eclipse.aether.graph.Dependency> managed = new HashMap<>();
+        for (org.eclipse.aether.graph.Dependency dependency : managedDependencies) {
+            managed.put(dependencyKey(dependency), dependency);
+        }
+
+        List<org.eclipse.aether.graph.Dependency> result = new ArrayList<>(dependencies.size());
+        for (org.eclipse.aether.graph.Dependency dependency : dependencies) {
+            org.eclipse.aether.graph.Dependency management = managed.get(dependencyKey(dependency));
+            if (management == null) {
+                result.add(dependency);
+                continue;
+            }
+
+            org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
+            if (artifact.getVersion().isEmpty()) {
+                artifact = artifact.setVersion(management.getArtifact().getVersion());
+            }
+            String scope = dependency.getScope();
+            if (scope.isEmpty()) {
+                scope = management.getScope();
+            }
+            Collection<org.eclipse.aether.graph.Exclusion> exclusions = dependency.getExclusions();
+            if (exclusions.isEmpty()) {
+                exclusions = management.getExclusions();
+            }
+            result.add(new org.eclipse.aether.graph.Dependency(artifact, scope, dependency.getOptional(), exclusions));
+        }
+        return result;
+    }
+
+    private static String dependencyKey(org.eclipse.aether.graph.Dependency dependency) {
+        org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
+        String type =
+                artifact.getProperty(org.eclipse.aether.artifact.ArtifactProperties.TYPE, artifact.getExtension());
+        return artifact.getGroupId() + ':' + artifact.getArtifactId() + ':' + type + ':' + artifact.getClassifier();
+    }
+
+    @Nonnull
+    @Override
+    public List<Node> flatten(@Nonnull Session s, @Nonnull Node node, @Nullable PathScope scope)
+            throws DependencyResolverException {
+        InternalSession session = InternalSession.from(s);
+        DependencyNode root = cast(AbstractNode.class, node, "node").getDependencyNode();
+        List<DependencyNode> dependencies = session.getRepositorySystem()
+                .flattenDependencyNodes(session.getSession(), root, getScopeDependencyFilter(scope));
+        dependencies.remove(root);
+        return map(dependencies, session::getNode);
+    }
+
+    private static DependencyFilter getScopeDependencyFilter(PathScope scope) {
+        if (scope == null) {
+            return null;
+        }
+        Set<String> scopes =
+                scope.dependencyScopes().stream().map(DependencyScope::id).collect(Collectors.toSet());
+        return (n, p) -> {
+            org.eclipse.aether.graph.Dependency d = n.getDependency();
+            return d == null || scopes.contains(d.getScope());
+        };
+    }
+
+    /**
+     * Collects, flattens and resolves the dependencies.
+     *
+     * @param request the request to resolve
+     * @return the result of the resolution
+     */
+    @Override
+    public DependencyResolverResult resolve(DependencyResolverRequest request)
+            throws DependencyResolverException, ArtifactResolverException {
+        InternalSession session =
+                InternalSession.from(requireNonNull(request, "request").getSession());
+        RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(session, request);
+        try {
+            return session.request(request, this::doResolve);
+        } finally {
+            RequestTraceHelper.exit(trace);
+        }
+    }
+
+    private DependencyResolverResult doResolve(DependencyResolverRequest request) {
+        InternalSession session = InternalSession.from(request.getSession());
+        DependencyResolverResult result;
+        DependencyResolverResult collectorResult = doCollect(request);
+        List<RemoteRepository> repositories = request.getRepositories() != null
+                ? request.getRepositories()
+                : request.getProject().isPresent()
+                        ? session.getService(ProjectManager.class)
+                                .getRemoteProjectRepositories(
+                                        request.getProject().get())
+                        : session.getRemoteRepositories();
+        if (request.getRequestType() == DependencyResolverRequest.RequestType.COLLECT) {
+            result = collectorResult;
+        } else {
+            List<Node> nodes = flatten(session, collectorResult.getRoot(), request.getPathScope());
+            List<ArtifactCoordinates> coordinates = nodes.stream()
+                    .map(Node::getDependency)
+                    .filter(Objects::nonNull)
+                    .map(Artifact::toCoordinates)
+                    .collect(Collectors.toList());
+            Predicate<PathType> filter = request.getPathTypeFilter();
+            DefaultDependencyResolverResult resolverResult = new DefaultDependencyResolverResult(
+                    request,
+                    moduleCache(request),
+                    collectorResult.getExceptions(),
+                    collectorResult.getRoot(),
+                    nodes.size());
+            if (request.getRequestType() == DependencyResolverRequest.RequestType.FLATTEN) {
+                for (Node node : nodes) {
+                    resolverResult.addNode(node);
+                }
+            } else {
+                ArtifactResolverResult artifactResolverResult =
+                        session.getService(ArtifactResolver.class).resolve(session, coordinates, repositories);
+                for (Node node : nodes) {
+                    Path path = (node.artifact() != null)
+                            ? artifactResolverResult
+                                    .getResult(node.artifact().toCoordinates())
+                                    .getPath()
+                            : null;
+                    try {
+                        resolverResult.addDependency(node, node.dependency(), filter, path);
+                    } catch (IOException e) {
+                        throw cannotReadModuleInfo(path, e);
+                    }
+                }
+            }
+            result = resolverResult;
+        }
+
+        return result;
+    }
+
+    private static DependencyResolverException cannotReadModuleInfo(final Path path, final IOException cause) {
+        return new DependencyResolverException("Cannot read module information of " + path, cause);
+    }
+
+    private static boolean containsUnresolvedExpression(String value) {
+        return value != null && value.contains("${") && value.contains("}");
+    }
+
+    private static String enhanceCollectionError(DependencyCollectionException e, CollectRequest request) {
+        if (e.getMessage() != null && e.getMessage().contains("Invalid Collect Request")) {
+            StringBuilder enhanced = new StringBuilder();
+            enhanced.append("Failed to collect dependencies");
+
+            org.eclipse.aether.graph.Dependency root = request.getRoot();
+            if (root != null && root.getArtifact() != null) {
+                org.eclipse.aether.artifact.Artifact artifact = root.getArtifact();
+                String groupId = artifact.getGroupId();
+                String artifactId = artifact.getArtifactId();
+                String version = artifact.getVersion();
+
+                if (containsUnresolvedExpression(groupId)
+                        || containsUnresolvedExpression(artifactId)
+                        || containsUnresolvedExpression(version)) {
+                    enhanced.append(" due to unresolved expression(s) in dependency: ")
+                            .append(groupId)
+                            .append(":")
+                            .append(artifactId)
+                            .append(":")
+                            .append(version)
+                            .append(".\n")
+                            .append("Please check that all properties are defined in your POM or settings.xml.");
+                    return enhanced.toString();
+                }
+            }
+
+            for (org.eclipse.aether.graph.Dependency dep : request.getDependencies()) {
+                if (dep != null && dep.getArtifact() != null) {
+                    org.eclipse.aether.artifact.Artifact artifact = dep.getArtifact();
+                    String groupId = artifact.getGroupId();
+                    String artifactId = artifact.getArtifactId();
+                    String version = artifact.getVersion();
+
+                    if (containsUnresolvedExpression(groupId)
+                            || containsUnresolvedExpression(artifactId)
+                            || containsUnresolvedExpression(version)) {
+                        enhanced.append(" due to unresolved expression(s) in dependency: ")
+                                .append(groupId)
+                                .append(":")
+                                .append(artifactId)
+                                .append(":")
+                                .append(version)
+                                .append(".\n")
+                                .append("Please check that all properties are defined in your POM or settings.xml.");
+                        return enhanced.toString();
+                    }
+                }
+            }
+        }
+        return e.getMessage();
+    }
+}

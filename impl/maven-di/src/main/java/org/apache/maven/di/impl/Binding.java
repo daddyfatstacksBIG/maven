@@ -1,0 +1,298 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.di.impl;
+
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Member;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.maven.di.Key;
+
+public abstract class Binding<T> {
+    private final Set<Dependency<?>> dependencies;
+    private Annotation scope;
+    private int priority;
+    private Key<?> originalKey;
+
+    protected Binding(Key<? extends T> originalKey, Set<Dependency<?>> dependencies) {
+        this(originalKey, dependencies, null, 0);
+    }
+
+    protected Binding(Key<?> originalKey, Set<Dependency<?>> dependencies, Annotation scope, int priority) {
+        this.originalKey = originalKey;
+        this.dependencies = dependencies;
+        this.scope = scope;
+        this.priority = priority;
+    }
+
+    public static <T> Binding<T> toInstance(T instance) {
+        return new BindingToInstance<>(instance);
+    }
+
+    public static <T> Binding<T> toSupplier(Supplier<T> supplier) {
+        return new BindingToSupplier<>(supplier);
+    }
+
+    public static <R> Binding<R> to(Key<R> originalKey, TupleConstructorN<R> constructor, Class<?>[] types) {
+        return Binding.to(
+                originalKey,
+                constructor,
+                Stream.of(types).map(c -> new Dependency<>(Key.of(c), false)).toArray(Dependency<?>[]::new));
+    }
+
+    public static <R> Binding<R> to(
+            Key<R> originalKey, TupleConstructorN<R> constructor, Dependency<?>[] dependencies) {
+        return to(originalKey, constructor, dependencies, 0);
+    }
+
+    public static <R> Binding<R> to(
+            Key<R> originalKey, TupleConstructorN<R> constructor, Dependency<?>[] dependencies, int priority) {
+        return to(originalKey, constructor, dependencies, priority, null);
+    }
+
+    static <R> Binding<R> to(
+            Key<R> originalKey,
+            TupleConstructorN<R> constructor,
+            Dependency<?>[] dependencies,
+            int priority,
+            Member source) {
+        return new BindingToConstructor<>(originalKey, constructor, dependencies, priority, source);
+    }
+
+    // endregion
+
+    public Binding<T> scope(Annotation scope) {
+        this.scope = scope;
+        return this;
+    }
+
+    public Binding<T> prioritize(int priority) {
+        this.priority = priority;
+        return this;
+    }
+
+    public Binding<T> withKey(Key<?> key) {
+        this.originalKey = key;
+        return this;
+    }
+
+    public Binding<T> initializeWith(BindingInitializer<T> bindingInitializer) {
+        return initializeWith(bindingInitializer, null);
+    }
+
+    /**
+     * Initializes this binding with an optional identity for deduplicating generated registrations.
+     * Without one, each wrapper has its own identity. The initializer is identified in diagnostics.
+     *
+     * @param bindingInitializer initializer applied to the created instance
+     * @param registrationIdentity identity shared by equivalent registrations, or {@code null}
+     * @return the initialized binding
+     */
+    Binding<T> initializeWith(BindingInitializer<T> bindingInitializer, Object registrationIdentity) {
+        return new Binding<T>(
+                this.originalKey,
+                Stream.of(this.dependencies, bindingInitializer.getDependencies())
+                        .flatMap(Set::stream)
+                        .collect(Collectors.toSet()),
+                this.scope,
+                this.priority) {
+            @Override
+            public Supplier<T> compile(Function<Dependency<?>, Supplier<?>> compiler) {
+                final Supplier<T> compiledBinding = Binding.this.compile(compiler);
+                final Consumer<T> consumer = bindingInitializer.compile(compiler);
+                return () -> {
+                    try {
+                        T instance = compiledBinding.get();
+                        consumer.accept(instance);
+                        return instance;
+                    } catch (DIException e) {
+                        throw new DIException("Error while initializing binding " + Binding.this, e);
+                    }
+                };
+            }
+
+            @Override
+            public String toString() {
+                return Binding.this + " initialized by " + identityString(bindingInitializer);
+            }
+
+            @Override
+            List<String> getDiagnosticSourceLines(Function<Member, List<String>> memberSource) {
+                List<String> lines = new ArrayList<>(Binding.this.getDiagnosticSourceLines(memberSource));
+                lines.addAll(bindingInitializer.getDiagnosticSourceLines(memberSource));
+                return List.copyOf(lines);
+            }
+
+            @Override
+            Object getRegistrationIdentity() {
+                return registrationIdentity != null ? registrationIdentity : this;
+            }
+        };
+    }
+
+    public abstract Supplier<T> compile(Function<Dependency<?>, Supplier<?>> compiler);
+
+    public Set<Dependency<?>> getDependencies() {
+        return dependencies;
+    }
+
+    public Annotation getScope() {
+        return scope;
+    }
+
+    public Key<?> getOriginalKey() {
+        return originalKey;
+    }
+
+    public int getPriority() {
+        return priority;
+    }
+
+    Object getRegistrationIdentity() {
+        return this;
+    }
+
+    /** Returns unescaped source lines; the caller handles escaping and indentation. */
+    List<String> getDiagnosticSourceLines(Function<Member, List<String>> memberSource) {
+        return List.of(identityString(this));
+    }
+
+    static String identityString(Object object) {
+        return object == null
+                ? "null"
+                : object.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(object));
+    }
+
+    @Override
+    public String toString() {
+        return "Binding" + dependencies.toString();
+    }
+
+    @FunctionalInterface
+    public interface TupleConstructorN<R> {
+        R create(Object... args);
+    }
+
+    public static Comparator<Binding<?>> getPriorityComparator() {
+        return Comparator.<Binding<?>>comparingInt(Binding::getPriority).reversed();
+    }
+
+    public static class BindingToInstance<T> extends Binding<T> {
+        final T instance;
+
+        public BindingToInstance(T instance) {
+            super(null, Collections.emptySet());
+            this.instance = instance;
+        }
+
+        @Override
+        public Supplier<T> compile(Function<Dependency<?>, Supplier<?>> compiler) {
+            return () -> instance;
+        }
+
+        @Override
+        List<String> getDiagnosticSourceLines(Function<Member, List<String>> memberSource) {
+            return List.of("instance " + identityString(instance));
+        }
+
+        @Override
+        public String toString() {
+            return "BindingToInstance[" + getOriginalKey() + ", " + identityString(instance) + "]" + getDependencies();
+        }
+    }
+
+    public static class BindingToSupplier<T> extends Binding<T> {
+        final Supplier<T> supplier;
+
+        public BindingToSupplier(Supplier<T> supplier) {
+            super(null, Collections.emptySet());
+            this.supplier = supplier;
+        }
+
+        @Override
+        public Supplier<T> compile(Function<Dependency<?>, Supplier<?>> compiler) {
+            return supplier;
+        }
+
+        @Override
+        List<String> getDiagnosticSourceLines(Function<Member, List<String>> memberSource) {
+            return List.of("supplier " + identityString(supplier));
+        }
+
+        @Override
+        public String toString() {
+            return "BindingToSupplier[" + getOriginalKey() + ", " + identityString(supplier) + "]" + getDependencies();
+        }
+    }
+
+    public static class BindingToConstructor<T> extends Binding<T> {
+        final TupleConstructorN<T> constructor;
+        final Dependency<?>[] args;
+        final Member source;
+
+        BindingToConstructor(
+                Key<? extends T> key,
+                TupleConstructorN<T> constructor,
+                Dependency<?>[] dependencies,
+                int priority,
+                Member source) {
+            super(key, new HashSet<>(Arrays.asList(dependencies)), null, priority);
+            this.constructor = constructor;
+            this.args = dependencies;
+            this.source = source;
+        }
+
+        @Override
+        public Supplier<T> compile(Function<Dependency<?>, Supplier<?>> compiler) {
+            return () -> {
+                Object[] args =
+                        Stream.of(this.args).map(compiler).map(Supplier::get).toArray();
+                return constructor.create(args);
+            };
+        }
+
+        @Override
+        List<String> getDiagnosticSourceLines(Function<Member, List<String>> memberSource) {
+            return source != null ? memberSource.apply(source) : List.of("constructor " + identityString(constructor));
+        }
+
+        @Override
+        public String toString() {
+            return "BindingToConstructor[" + getOriginalKey() + ", "
+                    + (source != null ? source : identityString(constructor)) + "]"
+                    + getDependencies();
+        }
+
+        @Override
+        Object getRegistrationIdentity() {
+            return source != null ? source : this;
+        }
+    }
+}

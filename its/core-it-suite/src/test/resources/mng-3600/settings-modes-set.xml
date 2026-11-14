@@ -1,0 +1,10 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+  <servers>
+    <server>
+      <id>id</id>
+      <filePermissions>600</filePermissions>
+      <directoryPermissions>700</directoryPermissions>
+    </server>
+  </servers>
+</settings>
+

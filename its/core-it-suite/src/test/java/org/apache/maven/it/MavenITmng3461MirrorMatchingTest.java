@@ -1,0 +1,162 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.io.PrintWriter;
+import java.nio.file.Path;
+import java.util.Map;
+
+import org.eclipse.jetty.io.Content;
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.NetworkConnector;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.util.Callback;
+import org.junit.jupiter.api.Test;
+
+/**
+ * This is a test set for <a href="https://issues.apache.org/jira/browse/MNG-3461">MNG-3461</a>.
+ *
+ * @author Benjamin Bentmann
+ *
+ */
+public class MavenITmng3461MirrorMatchingTest extends AbstractMavenIntegrationTestCase {
+
+    /**
+     * Test that mirror definitions are properly evaluated. In particular, an exact match by id should always
+     * win over wildcard matches.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testitExactMatchDominatesWildcard() throws Exception {
+        Path testDir = extractResources("mng-3461/test-1");
+
+        Verifier verifier = newVerifier(testDir);
+        verifier.setAutoclean(false);
+        verifier.deleteArtifacts("org.apache.maven.its.mng3461");
+        verifier.filterFile("settings-template.xml", "settings.xml");
+        verifier.addCliArgument("--settings");
+        verifier.addCliArgument("settings.xml");
+        verifier.addCliArgument("validate");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+
+        verifier.verifyArtifactPresent("org.apache.maven.its.mng3461", "a", "0.1", "jar");
+    }
+
+    /**
+     * Test that mirror definitions are properly evaluated. In particular, the wildcard external:* should not
+     * match file:// and localhost repos but only external repos.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testitExternalWildcard() throws Exception {
+        Path testDir = extractResources("mng-3461/test-2");
+
+        Verifier verifier = newVerifier(testDir);
+
+        Handler repoHandler = new Handler.Abstract() {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception {
+                System.out.println("Handling " + request.getMethod() + " "
+                        + request.getHttpURI().toString());
+
+                String uri = Request.getPathInContext(request);
+                if (uri.endsWith("/b-0.1.jar")) {
+                    response.setStatus(200);
+                    PrintWriter writer = new PrintWriter(Content.Sink.asOutputStream(response));
+                    writer.println(uri);
+                    writer.flush();
+                } else if (uri.endsWith("/b-0.1.pom")) {
+                    response.setStatus(200);
+                    PrintWriter writer = new PrintWriter(Content.Sink.asOutputStream(response));
+                    writer.println("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">");
+                    writer.println("  <modelVersion>4.0.0</modelVersion>");
+                    writer.println("  <groupId>org.apache.maven.its.mng3461</groupId>");
+                    writer.println("  <artifactId>b</artifactId>");
+                    writer.println("  <version>0.1</version>");
+                    writer.println("</project>");
+                    writer.flush();
+                } else {
+                    response.setStatus(404);
+                }
+
+                callback.succeeded();
+                return true;
+            }
+        };
+
+        Server server = new Server(0);
+        server.setHandler(repoHandler);
+
+        try {
+            server.start();
+            if (server.isFailed()) {
+                fail("Couldn't bind the server socket to a free port!");
+            }
+
+            int port = ((NetworkConnector) server.getConnectors()[0]).getLocalPort();
+            System.out.println("Bound server socket to the port " + port);
+
+            verifier.setAutoclean(false);
+            verifier.deleteArtifacts("org.apache.maven.its.mng3461");
+            Map<String, String> filterProps = verifier.newDefaultFilterMap();
+            filterProps.put("@test.port@", Integer.toString(port));
+            verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+            verifier.addCliArgument("--settings");
+            verifier.addCliArgument("settings.xml");
+            verifier.addCliArgument("validate");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+        } finally {
+            server.stop();
+            server.join();
+        }
+
+        verifier.verifyArtifactPresent("org.apache.maven.its.mng3461", "a", "0.1", "jar");
+        verifier.verifyArtifactPresent("org.apache.maven.its.mng3461", "b", "0.1", "jar");
+        verifier.verifyArtifactPresent("org.apache.maven.its.mng3461", "c", "0.1", "jar");
+    }
+
+    /**
+     * Test that mirror definitions are properly evaluated. In particular, the wildcards within a single mirrorOf
+     * spec should not be greedy.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testitNonGreedyWildcard() throws Exception {
+        Path testDir = extractResources("mng-3461/test-3");
+
+        Verifier verifier = newVerifier(testDir);
+        verifier.setAutoclean(false);
+        verifier.deleteArtifacts("org.apache.maven.its.mng3461");
+        verifier.filterFile("settings-template.xml", "settings.xml");
+        verifier.addCliArgument("--settings");
+        verifier.addCliArgument("settings.xml");
+        verifier.addCliArgument("validate");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+
+        verifier.verifyArtifactPresent("org.apache.maven.its.mng3461", "a", "0.1", "jar");
+    }
+}

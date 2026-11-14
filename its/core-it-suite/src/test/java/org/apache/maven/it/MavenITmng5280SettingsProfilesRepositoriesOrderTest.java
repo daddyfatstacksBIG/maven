@@ -1,0 +1,230 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+
+import org.eclipse.jetty.io.Content;
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.NetworkConnector;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.util.Callback;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * This is a test set for <a href="https://issues.apache.org/jira/browse/MNG-5280">MNG-5280</a>.
+ *
+ * @author Anders Hammar
+ */
+public class MavenITmng5280SettingsProfilesRepositoriesOrderTest extends AbstractMavenIntegrationTestCase {
+    private Path testDir;
+
+    private Server server;
+
+    @BeforeEach
+    protected void setUp() throws Exception {
+        testDir = extractResources("mng-5280");
+        server = new Server(0);
+    }
+
+    @AfterEach
+    protected void tearDown() throws Exception {
+        if (server != null) {
+            server.stop();
+            server.join();
+        }
+    }
+
+    /**
+     * Verify that the repositories are used in the reversed order of definition in settings.xml.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testRepositoriesOrder() throws Exception {
+        RepoHandler repoHandler = new RepoHandler();
+        server.setHandler(repoHandler);
+        server.start();
+        if (server.isFailed()) {
+            fail("Couldn't bind the server socket to a free port!");
+        }
+        int httpPort = ((NetworkConnector) server.getConnectors()[0]).getLocalPort();
+        System.out.println("Bound server socket to the port " + httpPort);
+
+        Verifier verifier = newVerifier(testDir);
+
+        verifier.setAutoclean(false);
+        verifier.deleteDirectory("target");
+        verifier.deleteArtifacts("org.apache.maven.its.mng5280");
+        Map<String, String> filterProps = verifier.newDefaultFilterMap();
+        filterProps.put("@httpserver.port@", Integer.toString(httpPort));
+        verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+        verifier.addCliArgument("--settings");
+        verifier.addCliArgument("settings.xml");
+        verifier.addCliArgument(
+                "org.apache.maven.its.plugins:maven-it-plugin-dependency-resolution:2.1-SNAPSHOT:compile");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+
+        assertTrue(repoHandler.artifactRequestedFromRepo2);
+        assertTrue(repoHandler.artifactRequestedFromRepo1Last);
+    }
+
+    /**
+     * Verify that the plugin repositories are used in the reversed order of definition in settings.xml.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testPluginRepositoriesOrder() throws Exception {
+        PluginRepoHandler pluginRepoHandler = new PluginRepoHandler();
+        server.setHandler(pluginRepoHandler);
+        server.start();
+        if (server.isFailed()) {
+            fail("Couldn't bind the server socket to a free port!");
+        }
+        int httpPort = ((NetworkConnector) server.getConnectors()[0]).getLocalPort();
+        System.out.println("Bound server socket to the port " + httpPort);
+
+        Verifier verifier = newVerifier(testDir);
+
+        verifier.setAutoclean(false);
+        verifier.deleteDirectory("target");
+        verifier.deleteArtifacts("org.apache.maven.its.mng5280");
+        Map<String, String> filterProps = verifier.newDefaultFilterMap();
+        filterProps.put("@httpserver.port@", Integer.toString(httpPort));
+        verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+        verifier.addCliArgument("--settings");
+        verifier.addCliArgument("settings.xml");
+        verifier.addCliArgument("org.apache.maven.its.mng5280:fake-maven-plugin:1.0:fake");
+        verifier.execute();
+
+        assertTrue(pluginRepoHandler.pluginRequestedFromRepo2);
+        assertTrue(pluginRepoHandler.pluginRequestedFromRepo1Last);
+    }
+
+    private static final class RepoHandler extends Handler.Abstract {
+        private volatile boolean artifactRequestedFromRepo1Last;
+
+        private volatile boolean artifactRequestedFromRepo2;
+
+        public boolean handle(Request request, Response response, Callback callback) throws Exception {
+            String uri = Request.getPathInContext(request);
+
+            if (uri.startsWith("/repo1/org/apache/maven/its/mng5280/fake-artifact/1.0/")) {
+                PrintWriter writer = new PrintWriter(Content.Sink.asOutputStream(response));
+
+                if (uri.endsWith(".pom")) {
+                    writer.println("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">");
+                    writer.println("  <modelVersion>4.0.0</modelVersion>");
+                    writer.println("  <groupId>org.apache.maven.its.mng5280</groupId>");
+                    writer.println("  <artifactId>fake-artifact</artifactId>");
+                    writer.println("  <version>1.0</version>");
+                    writer.println("</project>");
+
+                    response.setStatus(200);
+                } else if (uri.endsWith(".jar")) {
+                    writer.println("empty");
+
+                    response.setStatus(200);
+                    artifactRequestedFromRepo1Last = true;
+                } else {
+                    response.setStatus(404);
+                }
+                writer.flush();
+            } else if (uri.startsWith("/repo2/org/apache/maven/its/mng5280/fake-artifact/1.0/")) {
+                if (uri.endsWith(".jar")) {
+                    artifactRequestedFromRepo1Last = false;
+                    artifactRequestedFromRepo2 = true;
+                }
+                response.setStatus(404);
+            } else {
+                response.setStatus(404);
+            }
+
+            callback.succeeded();
+            return true;
+        }
+    }
+
+    private class PluginRepoHandler extends Handler.Abstract {
+        private volatile boolean pluginRequestedFromRepo1Last;
+
+        private volatile boolean pluginRequestedFromRepo2;
+
+        public boolean handle(Request request, Response response, Callback callback) throws Exception {
+            String uri = Request.getPathInContext(request);
+
+            if (uri.startsWith("/pluginRepo1/org/apache/maven/its/mng5280/fake-maven-plugin/1.0/")) {
+                OutputStream outStream = Content.Sink.asOutputStream(response);
+
+                if (uri.endsWith(".pom")) {
+                    Path pluginPom = testDir.resolve("fake-maven-plugin/fake-maven-plugin-1.0.pom");
+                    InputStream inStream = Files.newInputStream(pluginPom);
+                    copy(inStream, outStream);
+
+                    response.setStatus(200);
+                } else if (uri.endsWith(".jar")) {
+                    Path pluginJar = testDir.resolve("fake-maven-plugin/fake-maven-plugin-1.0.jar");
+                    InputStream inStream = Files.newInputStream(pluginJar);
+                    copy(inStream, outStream);
+
+                    response.setStatus(200);
+                    pluginRequestedFromRepo1Last = true;
+                } else {
+                    response.setStatus(404);
+                }
+            } else if (uri.startsWith("/pluginRepo2/org/apache/maven/its/mng5280/fake-maven-plugin/1.0/")) {
+                if (uri.endsWith(".jar")) {
+                    pluginRequestedFromRepo1Last = false;
+                    pluginRequestedFromRepo2 = true;
+                }
+                response.setStatus(404);
+            } else {
+                response.setStatus(404);
+            }
+
+            callback.succeeded();
+            return true;
+        }
+
+        private long copy(InputStream input, OutputStream output) throws IOException {
+            byte[] buffer = new byte[4 * 1024];
+            long count = 0;
+            int n = 0;
+            while (-1 != (n = input.read(buffer))) {
+                output.write(buffer, 0, n);
+                count += n;
+            }
+            return count;
+        }
+    }
+}

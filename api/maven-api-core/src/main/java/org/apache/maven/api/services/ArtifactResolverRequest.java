@@ -1,0 +1,195 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.api.services;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Objects;
+
+import org.apache.maven.api.ArtifactCoordinates;
+import org.apache.maven.api.RemoteRepository;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.annotations.Experimental;
+import org.apache.maven.api.annotations.Immutable;
+import org.apache.maven.api.annotations.Nonnull;
+import org.apache.maven.api.annotations.NotThreadSafe;
+import org.apache.maven.api.annotations.Nullable;
+import org.apache.maven.api.cache.CacheRetention;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * A request for resolving an artifact.
+ *
+ * @since 4.0.0
+ */
+@Experimental
+@Immutable
+public interface ArtifactResolverRequest extends RepositoryAwareRequest {
+
+    /**
+     * Overrides the default {@link CacheRetention#DISABLED} retention with
+     * {@link CacheRetention#REQUEST_SCOPED}, because artifact resolution is a
+     * read-only, deterministic operation within a single build.
+     *
+     * @return {@link CacheRetention#REQUEST_SCOPED}
+     * @since 4.2.0
+     */
+    @Nonnull
+    @Override
+    default CacheRetention getCacheRetention() {
+        return CacheRetention.REQUEST_SCOPED;
+    }
+
+    /** @return the coordinates of the artifacts to resolve, never {@code null} */
+    @Nonnull
+    Collection<? extends ArtifactCoordinates> getCoordinates();
+
+    /** @return a new builder instance */
+    @Nonnull
+    static ArtifactResolverRequestBuilder builder() {
+        return new ArtifactResolverRequestBuilder();
+    }
+
+    /**
+     * Builds a request to resolve artifacts from their coordinates.
+     *
+     * @param session the session
+     * @param coordinates the artifact coordinates to resolve
+     * @return a new request, never {@code null}
+     */
+    @Nonnull
+    static ArtifactResolverRequest build(
+            @Nonnull Session session, @Nonnull Collection<? extends ArtifactCoordinates> coordinates) {
+        return builder()
+                .session(requireNonNull(session, "session cannot be null"))
+                .coordinates(requireNonNull(coordinates, "coordinates cannot be null"))
+                .build();
+    }
+
+    /**
+     * Builds a request to resolve artifacts from specific repositories.
+     *
+     * @param session the session
+     * @param coordinates the artifact coordinates to resolve
+     * @param repositories the remote repositories to resolve from
+     * @return a new request, never {@code null}
+     */
+    @Nonnull
+    static ArtifactResolverRequest build(
+            @Nonnull Session session,
+            @Nonnull Collection<? extends ArtifactCoordinates> coordinates,
+            List<RemoteRepository> repositories) {
+        return builder()
+                .session(requireNonNull(session, "session cannot be null"))
+                .coordinates(requireNonNull(coordinates, "coordinates cannot be null"))
+                .repositories(repositories)
+                .build();
+    }
+
+    @NotThreadSafe
+    class ArtifactResolverRequestBuilder {
+        Session session;
+        RequestTrace trace;
+        Collection<? extends ArtifactCoordinates> coordinates;
+        List<RemoteRepository> repositories;
+
+        ArtifactResolverRequestBuilder() {}
+
+        @Nonnull
+        public ArtifactResolverRequestBuilder session(Session session) {
+            this.session = session;
+            return this;
+        }
+
+        @Nonnull
+        public ArtifactResolverRequestBuilder trace(RequestTrace trace) {
+            this.trace = trace;
+            return this;
+        }
+
+        @Nonnull
+        public ArtifactResolverRequestBuilder coordinates(Collection<? extends ArtifactCoordinates> coordinates) {
+            this.coordinates = coordinates;
+            return this;
+        }
+
+        @Nonnull
+        public ArtifactResolverRequestBuilder repositories(List<RemoteRepository> repositories) {
+            this.repositories = repositories;
+            return this;
+        }
+
+        @Nonnull
+        public ArtifactResolverRequest build() {
+            return new DefaultArtifactResolverRequest(session, trace, coordinates, repositories);
+        }
+
+        private static class DefaultArtifactResolverRequest extends BaseRequest<Session>
+                implements ArtifactResolverRequest {
+            @Nonnull
+            private final Collection<? extends ArtifactCoordinates> coordinates;
+
+            @Nullable
+            private final List<RemoteRepository> repositories;
+
+            DefaultArtifactResolverRequest(
+                    @Nonnull Session session,
+                    @Nullable RequestTrace trace,
+                    @Nonnull Collection<? extends ArtifactCoordinates> coordinates,
+                    @Nonnull List<RemoteRepository> repositories) {
+                super(session, trace);
+                this.coordinates = List.copyOf(requireNonNull(coordinates, "coordinates cannot be null"));
+                this.repositories = validate(repositories);
+            }
+
+            @Nonnull
+            @Override
+            public Collection<? extends ArtifactCoordinates> getCoordinates() {
+                return coordinates;
+            }
+
+            @Nullable
+            @Override
+            public List<RemoteRepository> getRepositories() {
+                return repositories;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                return o instanceof DefaultArtifactResolverRequest that
+                        && Objects.equals(coordinates, that.coordinates)
+                        && Objects.equals(repositories, that.repositories);
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(coordinates, repositories);
+            }
+
+            @Override
+            @Nonnull
+            public String toString() {
+                return "ArtifactResolverRequest[" + "coordinates="
+                        + coordinates + ", repositories="
+                        + repositories + ']';
+            }
+        }
+    }
+}

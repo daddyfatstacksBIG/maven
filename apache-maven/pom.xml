@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
@@ -18,14 +17,13 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>org.apache.maven</groupId>
     <artifactId>maven</artifactId>
-    <version>4.0.0-alpha-1-SNAPSHOT</version>
+    <version>4.2.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>apache-maven</artifactId>
@@ -34,11 +32,11 @@ under the License.
   <name>Apache Maven Distribution</name>
   <description>The Apache Maven distribution, source and binary, in zip and tar.gz formats.</description>
 
-  <properties>
-    <distributionFileName>${distributionId}-${project.version}</distributionFileName>
-  </properties>
-
   <dependencies>
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-cli</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>
       <artifactId>maven-embedder</artifactId>
@@ -51,11 +49,7 @@ under the License.
       <groupId>org.apache.maven</groupId>
       <artifactId>maven-compat</artifactId>
     </dependency>
-    <dependency>
-      <groupId>org.eclipse.sisu</groupId>
-      <artifactId>org.eclipse.sisu.plexus</artifactId>
-    </dependency>
-    <!-- CLI -->
+
     <dependency>
       <groupId>commons-cli</groupId>
       <artifactId>commons-cli</artifactId>
@@ -63,39 +57,33 @@ under the License.
     <dependency>
       <groupId>org.apache.maven.wagon</groupId>
       <artifactId>wagon-http</artifactId>
-      <classifier>shaded</classifier>
-      <exclusions>
-        <exclusion>
-          <groupId>org.apache.httpcomponents</groupId>
-          <artifactId>httpclient</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.apache.httpcomponents</groupId>
-          <artifactId>httpcore</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.apache.maven.wagon</groupId>
-          <artifactId>wagon-http-shared</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
-    <!--  This is included in Wagon HTTP.
-          We are just making the dependency explicit
-          in order to ease license attribution -->
     <dependency>
-      <groupId>org.jsoup</groupId>
-      <artifactId>jsoup</artifactId>
-      <scope>runtime</scope>
+      <groupId>org.apache.maven.wagon</groupId>
+      <artifactId>wagon-file</artifactId>
     </dependency>
+
+    <!-- CLI -->
+    <!-- bridge from Apache Commons Logging (JCL) to SLF4J-->
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>jcl-over-slf4j</artifactId>
       <version>${slf4jVersion}</version>
       <scope>runtime</scope>
     </dependency>
+    <!-- bridge from System.Logger to SLF4J (Platform Logging API, added by JEP 264) -->
     <dependency>
-      <groupId>org.apache.maven.wagon</groupId>
-      <artifactId>wagon-file</artifactId>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-jdk-platform-logging</artifactId>
+      <version>${slf4jVersion}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- bridge from java.util.logging (JUL) to SLF4J -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>jul-to-slf4j</artifactId>
+      <version>${slf4jVersion}</version>
+      <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.maven.resolver</groupId>
@@ -103,64 +91,116 @@ under the License.
     </dependency>
     <dependency>
       <groupId>org.apache.maven.resolver</groupId>
+      <artifactId>maven-resolver-transport-file</artifactId>
+    </dependency>
+    <!-- HTTP/1.1, lowest priority, Java8+ (still must as some ITs force it) -->
+    <dependency>
+      <groupId>org.apache.maven.resolver</groupId>
       <artifactId>maven-resolver-transport-wagon</artifactId>
+    </dependency>
+    <!-- HTTP/1.1, default transport, Java8+ -->
+    <dependency>
+      <groupId>org.apache.maven.resolver</groupId>
+      <artifactId>maven-resolver-transport-apache</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>
-      <artifactId>maven-slf4j-provider</artifactId>
+      <artifactId>maven-logging</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.fusesource.jansi</groupId>
-      <artifactId>jansi</artifactId>
+      <groupId>org.jline</groupId>
+      <artifactId>jline-reader</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.codehaus.plexus</groupId>
-      <artifactId>plexus-cipher</artifactId>
+      <groupId>org.jline</groupId>
+      <artifactId>jline-terminal-jni</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jline</groupId>
+      <artifactId>jline-terminal-ffm</artifactId>
+    </dependency>
+
+    <!-- (legacy) DI annotations -->
+    <dependency>
+      <groupId>javax.inject</groupId>
+      <artifactId>javax.inject</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>jakarta.annotation</groupId>
+      <artifactId>jakarta.annotation-api</artifactId>
+    </dependency>
+
+    <!-- DI Runtime -->
+    <dependency>
+      <groupId>org.eclipse.sisu</groupId>
+      <artifactId>org.eclipse.sisu.plexus</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.sisu</groupId>
+      <artifactId>org.eclipse.sisu.inject</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.google.inject</groupId>
+      <artifactId>guice</artifactId>
+      <classifier>classes</classifier>
+    </dependency>
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm</artifactId>
     </dependency>
   </dependencies>
 
+  <pluginRepositories>
+    <pluginRepository>
+      <releases>
+        <enabled>false</enabled>
+      </releases>
+      <snapshots>
+        <enabled>true</enabled>
+      </snapshots>
+      <id>apache.snapshots</id>
+      <url>https://repository.apache.org/snapshots/</url>
+    </pluginRepository>
+  </pluginRepositories>
+
   <build>
-    <finalName>${distributionFileName}</finalName>
-    <pluginManagement>
-      <plugins>
-        <plugin>
-          <groupId>org.apache.rat</groupId>
-          <artifactId>apache-rat-plugin</artifactId>
-          <configuration>
-            <excludes combine.children="append">
-              <exclude>src/assembly/maven/bin/m2.conf</exclude>
-              <!-- these are partial scripts, resulting in mvn/mwnw scripts -->
-              <exclude>src/assembly/shared/init</exclude>
-              <exclude>src/assembly/shared/init.cmd</exclude>
-              <exclude>src/assembly/shared/mvnlauncher</exclude>
-              <exclude>src/assembly/shared/mvnlauncher.cmd</exclude>
-              <exclude>src/assembly/shared/mvnvalidate</exclude>
-              <exclude>src/assembly/shared/mvnvalidate.cmd</exclude>
-              <exclude>src/assembly/shared/mvnwlauncher</exclude>
-              <exclude>src/assembly/shared/mvnwlauncher.cmd</exclude>
-              <exclude>src/assembly/shared/run</exclude>
-              <exclude>src/assembly/shared/run.cmd</exclude>
-              <exclude>src/assembly/wrapper/*/download</exclude>
-              <exclude>src/assembly/wrapper/*/download.cmd</exclude>
-            </excludes>
-          </configuration>
-        </plugin>
-      </plugins>
-    </pluginManagement>
+    <resources>
+      <resource>
+        <filtering>true</filtering>
+        <directory>src/main/resources</directory>
+      </resource>
+    </resources>
     <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>buildnumber-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>create-buildnumber</id>
+            <goals>
+              <goal>create</goal>
+            </goals>
+            <configuration>
+              <doCheck>false</doCheck>
+              <doUpdate>false</doUpdate>
+              <revisionOnScmFailure>NON_CANONICAL</revisionOnScmFailure>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-dependency-plugin</artifactId>
-        <configuration>
-          <includeArtifactIds>jansi</includeArtifactIds>
-          <includes>META-INF/native/**</includes>
-        </configuration>
         <executions>
           <execution>
-            <id>unpack-jansi-native</id>
+            <id>unpack-jline-native</id>
             <goals>
               <goal>unpack-dependencies</goal>
             </goals>
+            <configuration>
+              <includeArtifactIds>jline-native</includeArtifactIds>
+              <includes>org/jline/nativ/**</includes>
+            </configuration>
           </execution>
         </executions>
       </plugin>
@@ -168,6 +208,21 @@ under the License.
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <executions>
+          <execution>
+            <!-- compiled here so that the launchers do not pay for source-launch compilation on every run -->
+            <id>compile-jvm-config-parser</id>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+            <configuration>
+              <compileSourceRoots>
+                <compileSourceRoot>${project.basedir}/src/assembly/maven/bin</compileSourceRoot>
+              </compileSourceRoots>
+              <includes>
+                <include>JvmConfigParser.java</include>
+              </includes>
+            </configuration>
+          </execution>
           <execution>
             <id>test-compile</id>
             <goals>
@@ -180,12 +235,9 @@ under the License.
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
-          <systemProperties>
-            <property>
-              <name>basedir</name>
-              <value>${basedir}</value>
-            </property>
-          </systemProperties>
+          <systemPropertyVariables>
+            <basedir>${basedir}</basedir>
+          </systemPropertyVariables>
         </configuration>
         <executions>
           <execution>
@@ -202,33 +254,59 @@ under the License.
         <executions>
           <execution>
             <id>create-distro-packages</id>
-            <phase>package</phase>
             <goals>
               <goal>single</goal>
             </goals>
+            <phase>package</phase>
             <configuration>
               <descriptors>
-                <descriptor>src/assembly/maven/bin.xml</descriptor>
+                <descriptor>src/assembly/bin.xml</descriptor>
               </descriptors>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>eu.maveniverse.maven.plugins</groupId>
+        <artifactId>bom-builder3</artifactId>
+        <version>1.3.4</version>
+        <executions>
+          <execution>
+            <id>skinny-bom</id>
+            <goals>
+              <goal>build-bom</goal>
+            </goals>
+            <configuration>
+              <bomClassifier>skinny</bomClassifier>
+              <bomName>Maven Dependencies Skinny BOM</bomName>
+              <bomDescription>Bill Of Materials for Apache Maven - Maven JARS only</bomDescription>
+              <outputFilename>maven-skinny-bom.xml</outputFilename>
+              <reactorDependencies>REACTOR</reactorDependencies>
+              <transitiveDependencies>NONE</transitiveDependencies>
+              <usePropertiesForVersion>true</usePropertiesForVersion>
+              <attach>true</attach>
+            </configuration>
+          </execution>
+          <execution>
+            <id>fat-bom</id>
+            <goals>
+              <goal>build-bom</goal>
+            </goals>
+            <configuration>
+              <bomClassifier>fat</bomClassifier>
+              <bomName>Maven Dependencies Fat BOM</bomName>
+              <bomDescription>Bill Of Materials for Apache Maven - All dependencies</bomDescription>
+              <outputFilename>maven-fat-bom.xml</outputFilename>
+              <reactorDependencies>REACTOR</reactorDependencies>
+              <transitiveDependencies>CURRENT_PROJECT</transitiveDependencies>
+              <usePropertiesForVersion>true</usePropertiesForVersion>
+              <attach>true</attach>
             </configuration>
           </execution>
         </executions>
       </plugin>
     </plugins>
   </build>
-
-  <pluginRepositories>
-    <pluginRepository>
-      <id>apache.snapshots</id>
-      <url>https://repository.apache.org/snapshots/</url>
-      <snapshots>
-        <enabled>true</enabled>
-      </snapshots>
-      <releases>
-        <enabled>false</enabled>
-      </releases>
-    </pluginRepository>
-  </pluginRepositories>
 
   <profiles>
     <profile>
@@ -245,10 +323,10 @@ under the License.
             <artifactId>maven-clean-plugin</artifactId>
             <executions>
               <execution>
+                <id>clean-target-dir</id>
                 <goals>
                   <goal>clean</goal>
                 </goals>
-                <id>clean-target-dir</id>
                 <phase>prepare-package</phase>
                 <configuration>
                   <excludeDefaultDirectories>true</excludeDefaultDirectories>
@@ -266,17 +344,45 @@ under the License.
             <executions>
               <execution>
                 <id>create-distribution-dir</id>
-                <phase>package</phase>
                 <goals>
                   <goal>single</goal>
                 </goals>
+                <phase>package</phase>
                 <configuration>
                   <finalName>./</finalName>
                   <appendAssemblyId>false</appendAssemblyId>
                   <attach>false</attach>
                   <outputDirectory>${distributionTargetDir}</outputDirectory>
                   <descriptors>
-                    <descriptor>src/assembly/maven/dir.xml</descriptor>
+                    <descriptor>src/assembly/dir.xml</descriptor>
+                  </descriptors>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>run-its</id>
+      <build>
+        <plugins>
+          <plugin>
+            <artifactId>maven-assembly-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>create-distribution-dir</id>
+                <goals>
+                  <goal>single</goal>
+                </goals>
+                <phase>package</phase>
+                <configuration>
+                  <finalName>./</finalName>
+                  <appendAssemblyId>false</appendAssemblyId>
+                  <attach>false</attach>
+                  <outputDirectory>${basedir}/target/maven</outputDirectory>
+                  <descriptors>
+                    <descriptor>src/assembly/dir.xml</descriptor>
                   </descriptors>
                 </configuration>
               </execution>
@@ -294,13 +400,13 @@ under the License.
             <executions>
               <execution>
                 <id>make-src-assembly</id>
-                <phase>package</phase>
                 <goals>
                   <goal>single</goal>
                 </goals>
+                <phase>package</phase>
                 <configuration>
                   <descriptors>
-                    <descriptor>src/assembly/maven/src.xml</descriptor>
+                    <descriptor>src/assembly/src.xml</descriptor>
                   </descriptors>
                   <tarLongFileMode>gnu</tarLongFileMode>
                 </configuration>
@@ -309,30 +415,75 @@ under the License.
           </plugin>
           <!-- calculate checksums of source release for Apache dist area -->
           <plugin>
-            <groupId>net.nicoulaj.maven.plugins</groupId>
-            <artifactId>checksum-maven-plugin</artifactId>
+            <groupId>eu.maveniverse.maven.plugins</groupId>
+            <artifactId>checksum-plugin3</artifactId>
             <executions>
               <execution>
                 <id>source-release-checksum</id>
                 <goals>
-                  <goal>files</goal>
+                  <goal>project</goal>
                 </goals>
+                <phase>post-integration-test</phase>
+                <configuration>
+                  <alg>SHA-512</alg>
+                  <includedClassifiers>
+                    <includedClassifier>src</includedClassifier>
+                    <includedClassifier>bin</includedClassifier>
+                  </includedClassifiers>
+                </configuration>
               </execution>
             </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>push-to-atr</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.tooling</groupId>
+            <artifactId>atr-maven-plugin</artifactId>
             <configuration>
-              <fileSets>
-                <fileSet>
-                  <directory>${project.build.directory}</directory>
-                  <includes>
-                    <include>${project.artifactId}-${project.version}-src.zip</include>
-                    <include>${project.artifactId}-${project.version}-src.tar.gz</include>
-                    <include>${project.artifactId}-${project.version}-bin.zip</include>
-                    <include>${project.artifactId}-${project.version}-bin.tar.gz</include>
-                  </includes>
-                </fileSet>
-              </fileSets>
-              <failIfNoFiles>true</failIfNoFiles>
+              <project>maven</project>
+              <runOnlyAtExecutionRoot>false</runOnlyAtExecutionRoot>
             </configuration>
+            <executions>
+              <execution>
+                <id>upload-src-to-atr</id>
+                <goals>
+                  <goal>upload</goal>
+                </goals>
+                <configuration>
+                  <directory>source</directory>
+                  <files>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-src.tar.gz</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-src.tar.gz.sha512</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-src.tar.gz.asc</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-src.zip</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-src.zip.sha512</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-src.zip.asc</file>
+                  </files>
+                </configuration>
+              </execution>
+              <execution>
+                <id>upload-bin-to-atr</id>
+                <goals>
+                  <goal>upload</goal>
+                </goals>
+                <configuration>
+                  <directory>binaries</directory>
+                  <files>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-bin.tar.gz</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-bin.tar.gz.sha512</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-bin.tar.gz.asc</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-bin.zip</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-bin.zip.sha512</file>
+                    <file>${project.build.directory}/${project.artifactId}-${project.version}-bin.zip.asc</file>
+                  </files>
+                </configuration>
+              </execution>
+            </executions>
           </plugin>
         </plugins>
       </build>
@@ -341,6 +492,84 @@ under the License.
       <id>versionlessMavenDist</id>
       <build>
         <finalName>${project.artifactId}</finalName>
+      </build>
+    </profile>
+    <!-- Runs the bin/mvn path conversion test as part of the build. The test is
+         a POSIX shell script driving the launcher, so it only applies to the
+         platforms that use bin/mvn; Windows ships and runs bin/mvn.cmd. -->
+    <profile>
+      <id>shell-script-tests</id>
+      <activation>
+        <os>
+          <family>unix</family>
+        </os>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.7.0</version>
+            <executions>
+              <execution>
+                <id>test-mvn-path-conversion</id>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <phase>test</phase>
+                <configuration>
+                  <skip>${skipTests}</skip>
+                  <executable>sh</executable>
+                  <arguments>
+                    <argument>${project.basedir}/src/test/scripts/test-mvn-path-conversion.sh</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>test-mvn-fast-version</id>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <phase>test</phase>
+                <configuration>
+                  <skip>${skipTests}</skip>
+                  <executable>sh</executable>
+                  <arguments>
+                    <argument>${project.basedir}/src/test/scripts/test-mvn-fast-version.sh</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>test-mvn-args</id>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <phase>test</phase>
+                <configuration>
+                  <skip>${skipTests}</skip>
+                  <executable>sh</executable>
+                  <arguments>
+                    <argument>${project.basedir}/src/test/scripts/test-mvn-args.sh</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>test-mvn-jvm-config</id>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <phase>test</phase>
+                <configuration>
+                  <skip>${skipTests}</skip>
+                  <executable>sh</executable>
+                  <arguments>
+                    <argument>${project.basedir}/src/test/scripts/test-mvn-jvm-config.sh</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
       </build>
     </profile>
   </profiles>

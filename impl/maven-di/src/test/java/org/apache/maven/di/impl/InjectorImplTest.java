@@ -1,0 +1,607 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.di.impl;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.lang.annotation.Retention;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.jar.JarOutputStream;
+import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+
+import org.apache.maven.api.annotations.Nullable;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.di.Named;
+import org.apache.maven.api.di.Priority;
+import org.apache.maven.api.di.Provides;
+import org.apache.maven.api.di.Qualifier;
+import org.apache.maven.api.di.Singleton;
+import org.apache.maven.api.di.Typed;
+import org.apache.maven.di.Injector;
+import org.apache.maven.di.Key;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@SuppressWarnings("unused")
+public class InjectorImplTest {
+
+    @Test
+    void discoverReadsRewrittenJar(@TempDir Path tempDir) throws Exception {
+        Path jar = tempDir.resolve("plugin.jar");
+        writeIndex(jar, "# first");
+        discover(jar);
+
+        // Rewritten in place, as a plugin rebuilt in the reactor is.
+        writeIndex(jar, "# second, and longer than the first");
+        discover(jar);
+
+        // Nothing keeps the jar open, so it can be deleted (fails on Windows while it is open).
+        Files.delete(jar);
+    }
+
+    private static void discover(Path jar) throws IOException {
+        try (URLClassLoader loader = new URLClassLoader(new URL[] {jar.toUri().toURL()}, null)) {
+            Injector.create().discover(loader);
+        }
+    }
+
+    private static void writeIndex(Path jar, String content) throws IOException {
+        try (OutputStream out = Files.newOutputStream(jar);
+                JarOutputStream jarOut = new JarOutputStream(out)) {
+            jarOut.putNextEntry(new ZipEntry("META-INF/maven/org.apache.maven.api.di.Inject"));
+            jarOut.write(content.getBytes(StandardCharsets.UTF_8));
+            jarOut.closeEntry();
+        }
+    }
+
+    @Test
+    void markerQualifierTest() {
+        Injector injector = Injector.create().bindImplicit(QualifierTest.class);
+        QualifierTest.MyMojo mojo = injector.getInstance(QualifierTest.MyMojo.class);
+        assertNotNull(mojo);
+        assertInstanceOf(QualifierTest.MyQualifiedServiceImpl.class, mojo.service);
+    }
+
+    static class QualifierTest {
+        @Qualifier
+        @Retention(RUNTIME)
+        @interface MyQualifier {}
+
+        interface MyService {}
+
+        @Named
+        @Priority(10)
+        static class MyNamedServiceImpl implements MyService {}
+
+        @MyQualifier
+        static class MyQualifiedServiceImpl implements MyService {}
+
+        @Named
+        static class MyMojo {
+            @Inject
+            @MyQualifier
+            MyService service;
+        }
+    }
+
+    @Test
+    void priorityTest() {
+        Injector injector = Injector.create().bindImplicit(PriorityTest.class);
+        PriorityTest.MyMojo mojo = injector.getInstance(PriorityTest.MyMojo.class);
+        assertNotNull(mojo);
+        assertInstanceOf(PriorityTest.MyPriorityServiceImpl.class, mojo.service);
+    }
+
+    static class PriorityTest {
+
+        interface MyService {}
+
+        @Named
+        static class MyServiceImpl implements MyService {}
+
+        @Named
+        @Priority(10)
+        static class MyPriorityServiceImpl implements MyService {}
+
+        @Named
+        static class MyMojo {
+            @Inject
+            MyService service;
+        }
+    }
+
+    @Test
+    void mojoTest() {
+        Injector injector = Injector.create().bindImplicit(MojoTest.class);
+        MojoTest.MyMojo mojo = injector.getInstance(MojoTest.MyMojo.class);
+        assertNotNull(mojo);
+    }
+
+    @SuppressWarnings("unused")
+    static class MojoTest {
+        @Qualifier
+        @Retention(RUNTIME)
+        @interface Mojo {}
+
+        interface MyService {}
+
+        @Named
+        static class MyServiceImpl implements MyService {}
+
+        @Mojo
+        static class MyMojo {
+            @Inject
+            MyService service;
+        }
+    }
+
+    @Test
+    void typedTest() {
+        Injector injector =
+                Injector.create().bindImplicit(TypedTest.MyServiceImpl.class).bindImplicit(TypedTest.MyMojo.class);
+        TypedTest.MyMojo mojo = injector.getInstance(TypedTest.MyMojo.class);
+        assertNotNull(mojo);
+        assertNotNull(mojo.service);
+    }
+
+    @SuppressWarnings("unused")
+    static class TypedTest {
+
+        interface MyService {}
+
+        @Named
+        @Typed
+        static class MyServiceImpl implements MyService {}
+
+        @Named
+        static class MyMojo {
+            @Inject
+            MyService service;
+        }
+    }
+
+    @Test
+    public void bindInterfacesTest() {
+        Injector injector = Injector.create().bindImplicit(BindInterfaces.ClassImpl.class);
+        BindInterfaces.TestInterface<String> inst =
+                injector.getInstance(new Key<BindInterfaces.TestInterface<String>>() {});
+        assertInstanceOf(BindInterfaces.ClassImpl.class, inst);
+    }
+
+    @Test
+    void bindTypedInterfacesTest() {
+        Injector injector = Injector.create().bindImplicit(BindInterfaces.TypedClassImpl.class);
+        BindInterfaces.TestInterface<String> inst =
+                injector.getInstance(new Key<BindInterfaces.TestInterface<String>>() {});
+        assertInstanceOf(BindInterfaces.TypedClassImpl.class, inst);
+    }
+
+    @Test
+    void bindingOuterClassRegistersBothInnerImplementations() {
+        Injector injector = Injector.create().bindImplicit(BindInterfaces.class);
+        List<BindInterfaces.TestInterface<String>> instances =
+                injector.getInstance(new Key<List<BindInterfaces.TestInterface<String>>>() {});
+
+        assertEquals(
+                Set.of(BindInterfaces.ClassImpl.class, BindInterfaces.TypedClassImpl.class),
+                instances.stream().map(Object::getClass).collect(Collectors.toSet()));
+        assertThrows(DIException.class, () -> injector.getInstance(new Key<BindInterfaces.TestInterface<String>>() {}));
+    }
+
+    static class BindInterfaces {
+
+        interface TestInterface<T> {
+            T getObj();
+        }
+
+        @Named
+        static class ClassImpl implements TestInterface<String> {
+            @Override
+            public String getObj() {
+                return null;
+            }
+        }
+
+        @Named
+        @Typed
+        static class TypedClassImpl implements TestInterface<String> {
+            @Override
+            public String getObj() {
+                return null;
+            }
+        }
+    }
+
+    @Test
+    void injectListTest() {
+        Injector injector = Injector.create().bindImplicit(InjectList.class);
+        List<InjectList.MyService> services = injector.getInstance(new Key<List<InjectList.MyService>>() {});
+        assertNotNull(services);
+        assertEquals(2, services.size());
+
+        assertNotNull(services.get(0));
+        assertInstanceOf(InjectList.MyService.class, services.get(0));
+        assertNotNull(services.get(1));
+        assertInstanceOf(InjectList.MyService.class, services.get(1));
+        assertNotSame(services.get(0).getClass(), services.get(1).getClass());
+    }
+
+    @Test
+    void injectListWithPriorityTest() {
+        Injector injector = Injector.create().bindImplicit(InjectListWithPriority.class);
+        List<InjectListWithPriority.MyService> services =
+                injector.getInstance(new Key<List<InjectListWithPriority.MyService>>() {});
+        assertNotNull(services);
+        assertEquals(3, services.size());
+
+        // Verify services are ordered by priority (highest first)
+        assertInstanceOf(InjectListWithPriority.HighPriorityServiceImpl.class, services.get(0));
+        assertInstanceOf(InjectListWithPriority.MediumPriorityServiceImpl.class, services.get(1));
+        assertInstanceOf(InjectListWithPriority.LowPriorityServiceImpl.class, services.get(2));
+    }
+
+    static class InjectList {
+
+        interface MyService {}
+
+        @Named("foo")
+        static class MyServiceImpl implements MyService {}
+
+        @Named("bar")
+        static class AnotherServiceImpl implements MyService {}
+    }
+
+    static class InjectListWithPriority {
+
+        interface MyService {}
+
+        @Named
+        @Priority(100)
+        static class HighPriorityServiceImpl implements MyService {}
+
+        @Named
+        @Priority(50)
+        static class MediumPriorityServiceImpl implements MyService {}
+
+        @Named
+        @Priority(10)
+        static class LowPriorityServiceImpl implements MyService {}
+    }
+
+    @Test
+    void injectMapTest() {
+        Injector injector = Injector.create().bindImplicit(InjectMap.class);
+        Map<String, InjectMap.MyService> services =
+                injector.getInstance(new Key<Map<String, InjectMap.MyService>>() {});
+        assertNotNull(services);
+        assertEquals(2, services.size());
+
+        List<Map.Entry<String, InjectMap.MyService>> entries = new ArrayList<>(services.entrySet());
+        assertNotNull(entries.get(0));
+        assertInstanceOf(InjectMap.MyService.class, entries.get(0).getValue());
+        assertInstanceOf(String.class, entries.get(0).getKey());
+        assertNotNull(entries.get(1));
+        assertInstanceOf(String.class, entries.get(1).getKey());
+        assertInstanceOf(InjectMap.MyService.class, entries.get(1).getValue());
+        assertNotEquals(entries.get(0).getKey(), entries.get(1).getKey());
+        assertNotSame(
+                entries.get(0).getValue().getClass(), entries.get(1).getValue().getClass());
+
+        InjectMap.MyMojo mojo = injector.getInstance(InjectMap.MyMojo.class);
+        assertNotNull(mojo);
+        assertNotNull(mojo.services);
+        assertEquals(2, mojo.services.size());
+    }
+
+    static class InjectMap {
+
+        interface MyService {}
+
+        @Named("foo")
+        static class MyServiceImpl implements MyService {}
+
+        @Named("bar")
+        static class AnotherServiceImpl implements MyService {}
+
+        @Named
+        static class MyMojo {
+            @Inject
+            Map<String, MyService> services;
+        }
+    }
+
+    @Test
+    void duplicateNamedBindingsInMapReportBothOrigins() {
+        Injector injector = Injector.create()
+                .bindImplicit(DuplicateNamedBindings.FirstDispatcher.class)
+                .bindImplicit(DuplicateNamedBindings.SecondDispatcher.class);
+
+        DIException exception = assertThrows(
+                DIException.class,
+                () -> injector.getInstance(new Key<Map<String, DuplicateNamedBindings.Dispatcher>>() {}));
+
+        String message = exception.getMessage();
+        assertTrue(message.contains("@Named(\"legacy\")"), message);
+        assertTrue(message.contains("FirstDispatcher"), message);
+        assertTrue(message.contains("SecondDispatcher"), message);
+        assertTrue(message.contains("FirstDispatcher()"), message);
+        assertTrue(message.contains("SecondDispatcher()"), message);
+    }
+
+    static class DuplicateNamedBindings {
+
+        interface Dispatcher {}
+
+        @Named("legacy")
+        static class FirstDispatcher implements Dispatcher {}
+
+        @Named("legacy")
+        static class SecondDispatcher implements Dispatcher {}
+    }
+
+    @Test
+    void testSingleton() {
+        Injector injector = Injector.create()
+                .bindImplicit(SingletonContainer.Bean1.class)
+                .bindImplicit(SingletonContainer.Bean2.class);
+
+        SingletonContainer.Bean1 b1a = injector.getInstance(SingletonContainer.Bean1.class);
+        assertNotNull(b1a);
+        SingletonContainer.Bean1 b1b = injector.getInstance(SingletonContainer.Bean1.class);
+        assertNotNull(b1b);
+        assertEquals(b1a.num, b1b.num);
+
+        SingletonContainer.Bean2 b2a = injector.getInstance(SingletonContainer.Bean2.class);
+        assertNotNull(b2a);
+        SingletonContainer.Bean2 b2b = injector.getInstance(SingletonContainer.Bean2.class);
+        assertNotNull(b2b);
+        assertNotEquals(b2a.num, b2b.num);
+    }
+
+    static class SingletonContainer {
+        private static final AtomicInteger BEAN_1 = new AtomicInteger();
+        private static final AtomicInteger BEAN_2 = new AtomicInteger();
+
+        @Named
+        @Singleton
+        static class Bean1 {
+            int num = BEAN_1.incrementAndGet();
+        }
+
+        @Named
+        static class Bean2 {
+            int num = BEAN_2.incrementAndGet();
+        }
+    }
+
+    @Test
+    void testProvides() {
+        Injector injector = Injector.create().bindImplicit(ProvidesContainer.class);
+
+        assertNotNull(injector.getInstance(String.class));
+    }
+
+    static class ProvidesContainer {
+
+        @Provides
+        static ArrayList<String> newStringList() {
+            return new ArrayList<>(Arrays.asList("foo", "bar"));
+        }
+
+        @Provides
+        static String newStringOfList(List<String> list) {
+            return list.toString();
+        }
+    }
+
+    @Test
+    void testInjectConstructor() {
+        Injector injector = Injector.create().bindImplicit(InjectConstructorContainer.class);
+
+        assertNotNull(injector.getInstance(InjectConstructorContainer.Bean.class));
+    }
+
+    static class InjectConstructorContainer {
+        @Named
+        static class Bean {
+            @Inject
+            Bean(Another another, Third third) {}
+
+            Bean() {}
+        }
+
+        @Named
+        static class Another {}
+
+        @Named
+        static class Third {}
+    }
+
+    @Test
+    void testNullableOnField() {
+        Injector injector = Injector.create().bindImplicit(NullableOnField.class);
+        NullableOnField.MyMojo mojo = injector.getInstance(NullableOnField.MyMojo.class);
+        assertNotNull(mojo);
+        assertNull(mojo.service);
+    }
+
+    static class NullableOnField {
+
+        @Named
+        interface MyService {}
+
+        @Named
+        static class MyMojo {
+            @Inject
+            @Nullable
+            MyService service;
+        }
+    }
+
+    @Test
+    void testNullableOnConstructor() {
+        Injector injector = Injector.create().bindImplicit(NullableOnConstructor.class);
+        NullableOnConstructor.MyMojo mojo = injector.getInstance(NullableOnConstructor.MyMojo.class);
+        assertNotNull(mojo);
+        assertNull(mojo.service);
+    }
+
+    static class NullableOnConstructor {
+
+        @Named
+        interface MyService {}
+
+        @Named
+        static class MyMojo {
+            private final MyService service;
+
+            @Inject
+            MyMojo(@Nullable MyService service) {
+                this.service = service;
+            }
+        }
+    }
+
+    @Test
+    void testCircularPriorityDependency() {
+        Injector injector = Injector.create().bindImplicit(CircularPriorityTest.class);
+
+        DIException exception = assertThrows(DIException.class, () -> {
+            injector.getInstance(CircularPriorityTest.MyService.class);
+        });
+        assertInstanceOf(DIException.class, exception, "Expected exception to be DIException");
+        assertTrue(
+                exception.getMessage().contains("HighPriorityServiceImpl"),
+                "Expected exception message to contain 'HighPriorityServiceImpl' but was: " + exception.getMessage());
+
+        assertInstanceOf(DIException.class, exception.getCause(), "Expected cause to be DIException");
+        assertTrue(
+                exception.getCause().getMessage().contains("Cyclic dependency detected"),
+                "Expected cause message to contain 'Cyclic dependency detected' but was: "
+                        + exception.getCause().getMessage());
+        assertTrue(
+                exception.getCause().getMessage().contains("MyService"),
+                "Expected cause message to contain 'MyService' but was: "
+                        + exception.getCause().getMessage());
+    }
+
+    @Test
+    void testListInjectionWithMixedPriorities() {
+        Injector injector = Injector.create().bindImplicit(MixedPriorityTest.class);
+        List<MixedPriorityTest.MyService> services =
+                injector.getInstance(new Key<List<MixedPriorityTest.MyService>>() {});
+        assertNotNull(services);
+        assertEquals(4, services.size());
+
+        // Verify services are ordered by priority (highest first)
+        // Priority 200 (highest)
+        assertInstanceOf(MixedPriorityTest.VeryHighPriorityServiceImpl.class, services.get(0));
+        // Priority 100
+        assertInstanceOf(MixedPriorityTest.HighPriorityServiceImpl.class, services.get(1));
+        // Priority 50
+        assertInstanceOf(MixedPriorityTest.MediumPriorityServiceImpl.class, services.get(2));
+        // No priority annotation (default 0)
+        assertInstanceOf(MixedPriorityTest.DefaultPriorityServiceImpl.class, services.get(3));
+    }
+
+    static class CircularPriorityTest {
+        interface MyService {}
+
+        @Named
+        static class DefaultServiceImpl implements MyService {}
+
+        @Named
+        @Priority(10)
+        static class HighPriorityServiceImpl implements MyService {
+            @Inject
+            MyService defaultService; // This tries to inject the default implementation
+        }
+    }
+
+    static class MixedPriorityTest {
+
+        interface MyService {}
+
+        @Named
+        @Priority(200)
+        static class VeryHighPriorityServiceImpl implements MyService {}
+
+        @Named
+        @Priority(100)
+        static class HighPriorityServiceImpl implements MyService {}
+
+        @Named
+        @Priority(50)
+        static class MediumPriorityServiceImpl implements MyService {}
+
+        @Named
+        static class DefaultPriorityServiceImpl implements MyService {}
+    }
+
+    @Test
+    void testDisposeClearsBindingsAndCache() {
+        final Injector injector = Injector.create()
+                // bind two simple beans
+                .bindImplicit(DisposeTest.Foo.class)
+                .bindImplicit(DisposeTest.Bar.class);
+
+        // make sure they really get created
+        assertNotNull(injector.getInstance(DisposeTest.Foo.class));
+        assertNotNull(injector.getInstance(DisposeTest.Bar.class));
+
+        // now dispose
+        injector.dispose();
+
+        // after dispose, bindings should be gone => DIException on lookup
+        assertThrows(DIException.class, () -> injector.getInstance(DisposeTest.Foo.class));
+        assertThrows(DIException.class, () -> injector.getInstance(DisposeTest.Bar.class));
+    }
+
+    /**
+     * Simple test classes for dispose().
+     */
+    static class DisposeTest {
+        @Named
+        static class Foo {}
+
+        @Named
+        static class Bar {}
+    }
+}

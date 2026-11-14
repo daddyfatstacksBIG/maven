@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.1.0">
+  <parent>
+    <groupId>org.apache.maven.its</groupId>
+    <artifactId>mng8331</artifactId>
+    <version>1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>module-a</artifactId>
+  <packaging>jar</packaging>
+</project>

@@ -1,16 +1,24 @@
-target/
+**/target/**
 .project
 .classpath
 .settings/
 .svn/
-bin/
+.jbang/
+
 # Intellij
 *.ipr
 *.iml
 .idea
-out/
-.DS_Store
+!.idea/icon.png
 /bootstrap
 /dependencies.xml
 .java-version
 .checkstyle
+.factorypath
+
+# VSCode
+.vscode/
+
+# Mac
+.DS_Store
+

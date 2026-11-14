@@ -1,0 +1,19 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+
+  <profiles>
+    <profile>
+      <id>test-repo</id>
+      <repositories>
+        <repository>
+          <id>test-repo</id>
+          <url>file:../../test-repo</url>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>test-repo</activeProfile>
+  </activeProfiles>
+  
+</settings>

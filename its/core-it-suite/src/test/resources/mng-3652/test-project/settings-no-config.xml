@@ -1,0 +1,11 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+  <servers>
+    <server>
+      <id>test</id>
+      <configuration>
+        <timeout>30</timeout>
+      </configuration>
+    </server>
+  </servers>
+</settings>
+

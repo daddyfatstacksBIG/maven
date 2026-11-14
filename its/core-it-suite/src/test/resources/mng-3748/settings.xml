@@ -1,0 +1,14 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+    <unknown>
+        <repository>
+            <id>central</id>
+            <url>http://central</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </unknown>
+</settings>

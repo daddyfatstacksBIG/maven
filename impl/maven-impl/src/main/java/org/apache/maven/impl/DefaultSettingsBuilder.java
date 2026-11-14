@@ -1,0 +1,710 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.impl;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.maven.api.Constants;
+import org.apache.maven.api.ProtoSession;
+import org.apache.maven.api.annotations.Nullable;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.di.Named;
+import org.apache.maven.api.services.BuilderProblem;
+import org.apache.maven.api.services.Interpolator;
+import org.apache.maven.api.services.ProblemCollector;
+import org.apache.maven.api.services.SettingsBuilder;
+import org.apache.maven.api.services.SettingsBuilderException;
+import org.apache.maven.api.services.SettingsBuilderRequest;
+import org.apache.maven.api.services.SettingsBuilderResult;
+import org.apache.maven.api.services.Source;
+import org.apache.maven.api.services.xml.SettingsXmlFactory;
+import org.apache.maven.api.settings.Activation;
+import org.apache.maven.api.settings.IdentifiableBase;
+import org.apache.maven.api.settings.Mirror;
+import org.apache.maven.api.settings.Profile;
+import org.apache.maven.api.settings.Proxy;
+import org.apache.maven.api.settings.Repository;
+import org.apache.maven.api.settings.RepositoryPolicy;
+import org.apache.maven.api.settings.Server;
+import org.apache.maven.api.settings.Settings;
+import org.apache.maven.api.spi.SettingsParser;
+import org.apache.maven.api.spi.SettingsParserException;
+import org.apache.maven.settings.v4.SettingsMerger;
+import org.apache.maven.settings.v4.SettingsTransformer;
+import org.codehaus.plexus.components.secdispatcher.Dispatcher;
+import org.codehaus.plexus.components.secdispatcher.SecDispatcher;
+import org.codehaus.plexus.components.secdispatcher.internal.DefaultSecDispatcher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Builds the effective settings from a user settings file and/or a global settings file.
+ */
+@Named
+public class DefaultSettingsBuilder implements SettingsBuilder {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DefaultSettingsBuilder.class);
+
+    private final DefaultSettingsValidator settingsValidator = new DefaultSettingsValidator();
+
+    // Package-private so SettingsUtilsV4 can reuse the same configured merger instance.
+    static final SettingsMerger SETTINGS_MERGER = new SettingsMerger() {
+        @Override
+        protected KeyComputer<Repository> getRepositoryKey() {
+            return IdentifiableBase::getId;
+        }
+
+        @Override
+        protected KeyComputer<Mirror> getMirrorKey() {
+            return IdentifiableBase::getId;
+        }
+
+        @Override
+        protected KeyComputer<Server> getServerKey() {
+            return IdentifiableBase::getId;
+        }
+
+        @Override
+        protected KeyComputer<Proxy> getProxyKey() {
+            return IdentifiableBase::getId;
+        }
+
+        @Override
+        protected KeyComputer<Profile> getProfileKey() {
+            return IdentifiableBase::getId;
+        }
+    };
+
+    private final SettingsMerger settingsMerger = SETTINGS_MERGER;
+
+    private final SettingsParser xmlSettingsParser;
+
+    private final List<SettingsParser> settingsParsers;
+
+    private final Interpolator interpolator;
+
+    private final Map<String, Dispatcher> dispatchers;
+
+    /**
+     * In Maven4 the {@link SecDispatcher} is injected and build settings are fully decrypted as well.
+     */
+    public DefaultSettingsBuilder(
+            SettingsXmlFactory settingsXmlFactory, Interpolator interpolator, Map<String, Dispatcher> dispatchers) {
+        this(settingsXmlFactory, interpolator, dispatchers, List.of());
+    }
+
+    @Inject
+    public DefaultSettingsBuilder(
+            SettingsXmlFactory settingsXmlFactory,
+            Interpolator interpolator,
+            Map<String, Dispatcher> dispatchers,
+            @Nullable List<SettingsParser> settingsParsers) {
+        this.xmlSettingsParser = new XmlSettingsParser(settingsXmlFactory);
+        this.settingsParsers = deduplicate(settingsParsers);
+        this.interpolator = interpolator;
+        this.dispatchers = dispatchers;
+    }
+
+    private static List<SettingsParser> deduplicate(@Nullable List<SettingsParser> parsers) {
+        if (parsers == null || parsers.isEmpty()) {
+            return List.of();
+        }
+        Map<String, SettingsParser> seen = new LinkedHashMap<>();
+        for (SettingsParser parser : parsers) {
+            SettingsParser previous = seen.putIfAbsent(parser.id(), parser);
+            if (previous != null) {
+                LOGGER.warn(
+                        "Duplicate settings parser id '{}': {} already registered, ignoring {}",
+                        parser.id(),
+                        previous.getClass().getName(),
+                        parser.getClass().getName());
+            }
+        }
+        return List.copyOf(seen.values());
+    }
+
+    @Override
+    public SettingsBuilderResult build(SettingsBuilderRequest request) throws SettingsBuilderException {
+        RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(request.getSession(), request);
+        try {
+            return RequestExecutor.request(request, this::doBuild);
+        } finally {
+            RequestTraceHelper.exit(trace);
+        }
+    }
+
+    private SettingsBuilderResult doBuild(SettingsBuilderRequest request) throws SettingsBuilderException {
+        ProblemCollector<BuilderProblem> problems = ProblemCollector.create(request.getSession());
+
+        Source installationSource = request.getInstallationSettingsSource().orElse(null);
+        Settings installation = readSettings(installationSource, false, request, problems);
+
+        Source projectSource = request.getProjectSettingsSource().orElse(null);
+        Settings project = readSettings(projectSource, true, request, problems);
+
+        Source userSource = request.getUserSettingsSource().orElse(null);
+        Settings user = readSettings(userSource, false, request, problems);
+
+        Settings effective =
+                settingsMerger.merge(user, settingsMerger.merge(project, installation, false, null), false, null);
+
+        // Each list is checked independently: a user may define <repositories>
+        // (e.g. an internal mirror) without defining <pluginRepositories>, and
+        // plugin resolution still needs central.
+        if (effective.getRepositories().isEmpty()
+                || effective.getPluginRepositories().isEmpty()) {
+            Repository central = Repository.newBuilder()
+                    .id("central")
+                    .name("Central Repository")
+                    .url("https://repo.maven.apache.org/maven2")
+                    .snapshots(RepositoryPolicy.newBuilder().enabled(false).build())
+                    .build();
+            Repository centralWithNoUpdate = central.withReleases(
+                    RepositoryPolicy.newBuilder().updatePolicy("never").build());
+            Settings.Builder builder = Settings.newBuilder(effective);
+            if (effective.getRepositories().isEmpty()) {
+                builder.repositories(List.of(central));
+            }
+            if (effective.getPluginRepositories().isEmpty()) {
+                builder.pluginRepositories(List.of(centralWithNoUpdate));
+            }
+            effective = builder.build();
+        }
+
+        // resolve relative local repository paths to absolute to save plugins from trouble.
+        // paths containing property placeholders like ${user.home} must be left as-is
+        // so that later interpolation can resolve them.
+        String localRepository = effective.getLocalRepository();
+        if (localRepository != null && !localRepository.isEmpty()) {
+            Path file = Paths.get(localRepository);
+            if (!file.isAbsolute() && !localRepository.contains("${")) {
+                effective = effective.withLocalRepository(file.toAbsolutePath().toString());
+            }
+        }
+
+        if (problems.hasErrorProblems()) {
+            throw new SettingsBuilderException("Error building settings", problems);
+        }
+
+        return new DefaultSettingsBuilderResult(request, installation, project, user, effective, problems);
+    }
+
+    private Settings readSettings(
+            Source settingsSource,
+            boolean isProjectSettings,
+            SettingsBuilderRequest request,
+            ProblemCollector<BuilderProblem> problems) {
+        if (settingsSource == null) {
+            return Settings.newInstance();
+        }
+
+        // Determine if strict parsing mode is requested
+        boolean strictParsing = Boolean.parseBoolean(
+                request.getSession().getEffectiveProperties().get(Constants.MAVEN_SETTINGS_STRICT_PARSING));
+
+        Settings settings;
+
+        try {
+            SettingsParser parser = selectParser(settingsSource, problems);
+            if (parser == null) {
+                return Settings.newInstance();
+            }
+
+            // Interpolate the raw XML before parsing so that non-String fields
+            // (e.g. proxy.port, proxy.active) are resolved at the text level
+            // before Modello converts them to int/boolean.
+            Source interpolatedSource = interpolateSource(settingsSource, request);
+
+            try {
+                settings = parser.parse(interpolatedSource, Map.of(SettingsParser.STRICT, true));
+            } catch (SettingsParserException e) {
+                BuilderProblem.Severity severity =
+                        strictParsing ? BuilderProblem.Severity.FATAL : BuilderProblem.Severity.WARNING;
+                problems.reportProblem(new DefaultBuilderProblem(
+                        settingsSource.getLocation(),
+                        e.getLineNumber(),
+                        e.getColumnNumber(),
+                        e,
+                        e.getMessage(),
+                        severity));
+                if (strictParsing) {
+                    return Settings.newInstance();
+                }
+                settings = parser.parse(interpolatedSource, Map.of(SettingsParser.STRICT, false));
+            }
+        } catch (SettingsParserException e) {
+            problems.reportProblem(new DefaultBuilderProblem(
+                    settingsSource.getLocation(),
+                    e.getLineNumber(),
+                    e.getColumnNumber(),
+                    e,
+                    "Non-parseable settings " + settingsSource.getLocation() + ": " + e.getMessage(),
+                    BuilderProblem.Severity.FATAL));
+            return Settings.newInstance();
+        } catch (IOException e) {
+            problems.reportProblem(new DefaultBuilderProblem(
+                    settingsSource.getLocation(),
+                    -1,
+                    -1,
+                    e,
+                    "Non-readable settings " + settingsSource.getLocation() + ": " + e.getMessage(),
+                    BuilderProblem.Severity.FATAL));
+            return Settings.newInstance();
+        }
+
+        settings = interpolate(settings, request, problems);
+        settings = decrypt(settingsSource, settings, request, problems);
+
+        settingsValidator.validate(settings, isProjectSettings, problems);
+
+        if (!isProjectSettings) {
+            settings = settings.withServers(serversByIds(settings.getServers()));
+        } else {
+            settings = Settings.newBuilder(settings, true)
+                    .localRepository(null)
+                    .interactiveMode(false)
+                    .offline(false)
+                    .proxies(List.of())
+                    .usePluginRegistry(false)
+                    .servers(settings.getServers().stream()
+                            .map(s -> Server.newBuilder(s, true)
+                                    .username(null)
+                                    .passphrase(null)
+                                    .privateKey(null)
+                                    .password(null)
+                                    .filePermissions(null)
+                                    .directoryPermissions(null)
+                                    .aliases(List.of())
+                                    .repositoryOrigins(List.of())
+                                    .build())
+                            .toList())
+                    .build();
+        }
+
+        return settings;
+    }
+
+    private List<Server> serversByIds(List<Server> servers) {
+        return servers.stream()
+                .flatMap(server -> Stream.concat(
+                        Stream.of(server), server.getAliases().stream().map(id -> serverAlias(server, id))))
+                .toList();
+    }
+
+    private Server serverAlias(Server server, String id) {
+        return Server.newBuilder(server, true).id(id).aliases(List.of()).build();
+    }
+
+    /**
+     * XML-escapes a value so that it can be safely embedded in XML text content.
+     * Replaces the five predefined XML entities: {@code &}, {@code <}, {@code >},
+     * {@code "}, and {@code '}.
+     */
+    private static String xmlEscape(String value) {
+        if (value == null) {
+            return null;
+        }
+        // Quick check: if none of the special chars are present, return as-is
+        if (value.indexOf('&') < 0
+                && value.indexOf('<') < 0
+                && value.indexOf('>') < 0
+                && value.indexOf('"') < 0
+                && value.indexOf('\'') < 0) {
+            return value;
+        }
+        StringBuilder sb = new StringBuilder(value.length() + 16);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '&':
+                    sb.append("&amp;");
+                    break;
+                case '<':
+                    sb.append("&lt;");
+                    break;
+                case '>':
+                    sb.append("&gt;");
+                    break;
+                case '"':
+                    sb.append("&quot;");
+                    break;
+                case '\'':
+                    sb.append("&apos;");
+                    break;
+                default:
+                    sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Wraps the source so that when {@code openStream()} is called, the raw XML is read,
+     * interpolated as a string (resolving non-String fields like {@code <port>${test.port}</port>}
+     * before Modello converts them to int/boolean), and returned as a new stream.
+     *
+     * <p>Resolved property values are XML-escaped before substitution so that values containing
+     * XML special characters (e.g. {@code &x=y<>}) do not corrupt the XML structure.</p>
+     */
+    private Source interpolateSource(Source settingsSource, SettingsBuilderRequest request) {
+        UnaryOperator<String> src;
+        if (request.getInterpolationSource().isPresent()) {
+            src = request.getInterpolationSource().get();
+        } else {
+            Map<String, String> userProperties = request.getSession().getUserProperties();
+            Map<String, String> systemProperties = request.getSession().getSystemProperties();
+            src = Interpolator.chain(userProperties::get, systemProperties::get);
+        }
+
+        return new Source() {
+            @Override
+            public Path getPath() {
+                return settingsSource.getPath();
+            }
+
+            @Override
+            public InputStream openStream() throws IOException {
+                String rawXml;
+                try (InputStream in = settingsSource.openStream()) {
+                    byte[] bytes = in.readAllBytes();
+                    rawXml = new String(bytes, StandardCharsets.UTF_8);
+                }
+                // XML-escape resolved values so that property values containing XML special
+                // characters (e.g. &, <, >) do not produce malformed XML after substitution.
+                String interpolatedXml =
+                        interpolator.interpolate(rawXml, src, (name, value) -> xmlEscape(value), false);
+                return new ByteArrayInputStream(interpolatedXml.getBytes(StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public String getLocation() {
+                return settingsSource.getLocation();
+            }
+
+            @Override
+            public Source resolve(String relative) {
+                return settingsSource.resolve(relative);
+            }
+        };
+    }
+
+    @Nullable
+    private SettingsParser selectParser(Source source, ProblemCollector<BuilderProblem> problems) {
+        List<SettingsParser> matches = new ArrayList<>();
+        for (SettingsParser parser : settingsParsers) {
+            try {
+                if (parser.supports(source)) {
+                    matches.add(parser);
+                }
+            } catch (RuntimeException e) {
+                String msg = "Settings parser '" + parser.id() + "' failed to determine support for this source";
+                problems.reportProblem(
+                        new DefaultBuilderProblem(source.getLocation(), -1, -1, e, msg, BuilderProblem.Severity.FATAL));
+                return null;
+            }
+        }
+        if (matches.size() > 1) {
+            String parsers = matches.stream().map(SettingsParser::id).sorted().collect(Collectors.joining(", "));
+            String msg = "Multiple settings parsers support this source: " + parsers;
+            problems.reportProblem(
+                    new DefaultBuilderProblem(source.getLocation(), -1, -1, null, msg, BuilderProblem.Severity.FATAL));
+            return null;
+        }
+        return matches.isEmpty() ? xmlSettingsParser : matches.get(0);
+    }
+
+    private Settings interpolate(
+            Settings settings, SettingsBuilderRequest request, ProblemCollector<BuilderProblem> problems) {
+        UnaryOperator<String> src;
+        if (request.getInterpolationSource().isPresent()) {
+            src = request.getInterpolationSource().get();
+        } else {
+            Map<String, String> userProperties = request.getSession().getUserProperties();
+            Map<String, String> systemProperties = request.getSession().getSystemProperties();
+            src = Interpolator.chain(userProperties::get, systemProperties::get);
+        }
+        return new DefSettingsTransformer(value -> value != null ? interpolator.interpolate(value, src) : null)
+                .visit(settings);
+    }
+
+    static class DefSettingsTransformer extends SettingsTransformer {
+        DefSettingsTransformer(UnaryOperator<String> transformer) {
+            super(transformer);
+        }
+
+        @Override
+        protected Activation.Builder transformActivation_Condition(
+                Supplier<? extends Activation.Builder> creator, Activation.Builder builder, Activation target) {
+            // do not interpolate the condition activation
+            return builder;
+        }
+    }
+
+    private Settings decrypt(
+            Source settingsSource,
+            Settings settings,
+            SettingsBuilderRequest request,
+            ProblemCollector<BuilderProblem> problems) {
+        if (dispatchers.isEmpty()) {
+            return settings;
+        }
+        SecDispatcher secDispatcher = new DefaultSecDispatcher(dispatchers, getSecuritySettings(request.getSession()));
+        final AtomicInteger preMaven4Passwords = new AtomicInteger(0);
+        Settings result = new DecryptingSettingsTransformer(settingsSource, secDispatcher, preMaven4Passwords, problems)
+                .visit(settings);
+        if (preMaven4Passwords.get() > 0) {
+            problems.reportProblem(new DefaultBuilderProblem(
+                    settingsSource.getLocation(),
+                    -1,
+                    -1,
+                    null,
+                    "Detected " + preMaven4Passwords.get() + " pre-Maven 4 legacy encrypted password(s) "
+                            + "- configure password encryption with the help of mvnenc for increased security.",
+                    BuilderProblem.Severity.WARNING));
+        }
+        return result;
+    }
+
+    /**
+     * Decrypts every encrypted-looking string value found in the settings, reporting a problem
+     * for any value that cannot be decrypted. Unlike a plain string transform, this keeps track
+     * of which server, proxy or profile property is currently being decrypted so a failure can be
+     * reported by that reference rather than by echoing the encrypted value itself.
+     */
+    private static class DecryptingSettingsTransformer extends SettingsTransformer {
+        private final Source settingsSource;
+        private final SecDispatcher secDispatcher;
+        private final AtomicInteger preMaven4Passwords;
+        private final ProblemCollector<BuilderProblem> problems;
+        private String currentReference;
+
+        DecryptingSettingsTransformer(
+                Source settingsSource,
+                SecDispatcher secDispatcher,
+                AtomicInteger preMaven4Passwords,
+                ProblemCollector<BuilderProblem> problems) {
+            super(UnaryOperator.identity());
+            this.settingsSource = settingsSource;
+            this.secDispatcher = secDispatcher;
+            this.preMaven4Passwords = preMaven4Passwords;
+            this.problems = problems;
+        }
+
+        @Override
+        protected String transform(String str) {
+            if (str == null || str.isEmpty() || str.contains("${") || !secDispatcher.isAnyEncryptedString(str)) {
+                return str;
+            }
+            if (secDispatcher.isLegacyEncryptedString(str)) {
+                // the call above return true for too broad types of strings, original idea with 2.x sec-dispatcher
+                // was to make it possible to add "descriptions" to encrypted passwords. Maven 4 is
+                // limiting itself to decryption of ONLY the simplest cases of legacy passwords, those having form
+                // as documented on page: https://maven.apache.org/guides/mini/guide-encryption.html
+                // Examples of decrypted legacy passwords:
+                // <password>{COQLCE6DU6GtcS5P=}</password>
+                // <password>Oleg reset this password on 2009-03-11 {COQLCE6DU6GtcS5P=}</password>
+
+                // In short, secDispatcher#isLegacyEncryptedString(str) did return true, but we apply more scrutiny
+                // and check does string start with "{" or contains " {" (whitespace before opening curly braces),
+                // and that it ends with "}" strictly. Otherwise, we refuse it.
+                if ((!str.startsWith("{") && !str.contains(" {")) || !str.endsWith("}")) {
+                    // this is not a legacy password we care for
+                    return str;
+                }
+
+                // add a problem
+                preMaven4Passwords.incrementAndGet();
+            }
+            try {
+                return secDispatcher.decrypt(str);
+            } catch (Exception e) {
+                problems.reportProblem(new DefaultBuilderProblem(
+                        settingsSource.getLocation(),
+                        -1,
+                        -1,
+                        e,
+                        "Could not decrypt password (fix the corrupted password or remove it, if unused)"
+                                + (currentReference != null ? " for " + currentReference : ""),
+                        BuilderProblem.Severity.FATAL));
+                return str;
+            }
+        }
+
+        @Override
+        protected Server.Builder transformServer_Password(
+                Supplier<? extends Server.Builder> creator, Server.Builder builder, Server target) {
+            return withReference(
+                    "server " + target.getId(), () -> super.transformServer_Password(creator, builder, target));
+        }
+
+        @Override
+        protected Server.Builder transformServer_Passphrase(
+                Supplier<? extends Server.Builder> creator, Server.Builder builder, Server target) {
+            return withReference(
+                    "server " + target.getId(), () -> super.transformServer_Passphrase(creator, builder, target));
+        }
+
+        @Override
+        protected Proxy.Builder transformProxy_Password(
+                Supplier<? extends Proxy.Builder> creator, Proxy.Builder builder, Proxy target) {
+            return withReference(
+                    "proxy " + target.getId(), () -> super.transformProxy_Password(creator, builder, target));
+        }
+
+        @Override
+        protected Profile.Builder transformProfile_Properties(
+                Supplier<? extends Profile.Builder> creator, Profile.Builder builder, Profile target) {
+            Map<String, String> props = target.getProperties();
+            Map<String, String> newProps = null;
+            for (Map.Entry<String, String> entry : props.entrySet()) {
+                String newVal = withReference(
+                        "property " + entry.getKey() + " in profile " + target.getId(),
+                        () -> transform(entry.getValue()));
+                if (newVal != null && newVal != entry.getValue()) {
+                    if (newProps == null) {
+                        newProps = new HashMap<>(props);
+                        builder = builder != null ? builder : creator.get();
+                        builder.properties(newProps);
+                    }
+                    newProps.put(entry.getKey(), newVal);
+                }
+            }
+            return builder;
+        }
+
+        private <T> T withReference(String reference, Supplier<T> action) {
+            String previous = currentReference;
+            currentReference = reference;
+            try {
+                return action.get();
+            } finally {
+                currentReference = previous;
+            }
+        }
+    }
+
+    private Path getSecuritySettings(ProtoSession session) {
+        Map<String, String> properties = session.getEffectiveProperties();
+        String settingsSecurity = properties.get(Constants.MAVEN_SETTINGS_SECURITY);
+        if (settingsSecurity != null) {
+            return Paths.get(settingsSecurity);
+        }
+        String mavenUserConf = properties.get(Constants.MAVEN_USER_CONF);
+        if (mavenUserConf != null) {
+            return Paths.get(mavenUserConf, Constants.MAVEN_SETTINGS_SECURITY_FILE_NAME);
+        }
+        return Paths.get(properties.get("user.home"), ".m2", Constants.MAVEN_SETTINGS_SECURITY_FILE_NAME);
+    }
+
+    @Override
+    public ProblemCollector<BuilderProblem> validate(Settings settings, boolean isProjectSettings) {
+        // TODO: any way to get ProtoSession here?
+        ProblemCollector<BuilderProblem> problems = ProblemCollector.create(null);
+        settingsValidator.validate(settings, isProjectSettings, problems);
+        return problems;
+    }
+
+    @Override
+    public Profile convert(org.apache.maven.api.model.Profile profile) {
+        return SettingsUtilsV4.convertToSettingsProfile(profile);
+    }
+
+    @Override
+    public org.apache.maven.api.model.Profile convert(Profile profile) {
+        return SettingsUtilsV4.convertFromSettingsProfile(profile);
+    }
+
+    /**
+     * Collects the output of the settings builder.
+     */
+    static class DefaultSettingsBuilderResult implements SettingsBuilderResult {
+
+        private final SettingsBuilderRequest request;
+
+        private final Settings installationSettings;
+
+        private final Settings projectSettings;
+
+        private final Settings userSettings;
+
+        private final Settings effectiveSettings;
+
+        private final ProblemCollector<BuilderProblem> problems;
+
+        DefaultSettingsBuilderResult(
+                SettingsBuilderRequest request,
+                Settings installationSettings,
+                Settings projectSettings,
+                Settings userSettings,
+                Settings effectiveSettings,
+                ProblemCollector<BuilderProblem> problems) {
+            this.request = request;
+            this.installationSettings = installationSettings != null ? installationSettings : Settings.newInstance();
+            this.projectSettings = projectSettings != null ? projectSettings : Settings.newInstance();
+            this.userSettings = userSettings != null ? userSettings : Settings.newInstance();
+            this.effectiveSettings = effectiveSettings;
+            this.problems = (problems != null) ? problems : ProblemCollector.empty();
+        }
+
+        @Override
+        public SettingsBuilderRequest getRequest() {
+            return request;
+        }
+
+        @Override
+        public Settings getInstallationSettings() {
+            return installationSettings;
+        }
+
+        @Override
+        public Settings getProjectSettings() {
+            return projectSettings;
+        }
+
+        @Override
+        public Settings getUserSettings() {
+            return userSettings;
+        }
+
+        @Override
+        public Settings getEffectiveSettings() {
+            return effectiveSettings;
+        }
+
+        @Override
+        public ProblemCollector<BuilderProblem> getProblems() {
+            return problems;
+        }
+    }
+}

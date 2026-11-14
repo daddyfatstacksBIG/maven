@@ -1,0 +1,199 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.api;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+
+/**
+ * A Clock implementation that combines monotonic timing with wall-clock time.
+ * <p>
+ * This class provides precise time measurements using {@link System#nanoTime()}
+ * while maintaining wall-clock time information in UTC. The wall-clock time
+ * is computed from the monotonic duration since system start to ensure consistency
+ * between time measurements.
+ * <p>
+ * This implementation uses UTC timezone for the singleton instance.
+ * Timezone variants can be created via {@link #withZone(ZoneId)} while maintaining
+ * the same monotonic timing base. Users needing local time representation can either
+ * use {@link #withZone(ZoneId)} or convert the result of {@link #instant()}
+ * to their desired timezone:
+ * <pre>{@code
+ * Instant now = MonotonicClock.now();
+ * ZonedDateTime local = now.atZone(ZoneId.systemDefault());
+ * }</pre>
+ *
+ * @see System#nanoTime()
+ * @see Clock
+ */
+public class MonotonicClock extends Clock {
+    private static final MonotonicClock CLOCK = new MonotonicClock();
+
+    private final long startNanos;
+    private final Instant startInstant;
+    private final ZoneId zone;
+
+    /**
+     * Private constructor to enforce singleton pattern.
+     * Initializes the clock with the current system time and nanoTime.
+     */
+    private MonotonicClock() {
+        this.startNanos = System.nanoTime();
+        this.startInstant = Clock.systemUTC().instant();
+        this.zone = ZoneOffset.UTC;
+    }
+
+    /**
+     * Returns the singleton instance of MonotonicClock.
+     *
+     * @return the monotonic clock instance
+     */
+    public static MonotonicClock get() {
+        return CLOCK;
+    }
+
+    /**
+     * Returns the current instant from the monotonic clock.
+     * This is a convenience method equivalent to {@code get().instant()}.
+     *
+     * @return the current instant using monotonic timing
+     */
+    public static Instant now() {
+        return get().instant();
+    }
+
+    /**
+     * Returns the initialization time of this monotonic clock.
+     * This is a convenience method equivalent to {@code get().start()}.
+     *
+     * @return the instant when this monotonic clock was initialized
+     * @see #startInstant()
+     */
+    public static Instant start() {
+        return get().startInstant();
+    }
+
+    /**
+     * Returns the elapsed time since clock initialization.
+     * This is a convenience method equivalent to {@code get().elapsedTime()}.
+     *
+     * @return the duration since clock initialization
+     */
+    public static Duration elapsed() {
+        return get().elapsedTime();
+    }
+
+    /**
+     * Returns a monotonically increasing instant.
+     * <p>
+     * The returned instant is calculated by adding the elapsed nanoseconds
+     * since clock creation to the initial wall clock time. This ensures that
+     * the time never goes backwards and maintains a consistent relationship
+     * with the wall clock time.
+     *
+     * @return the current instant using monotonic timing
+     */
+    @Override
+    public Instant instant() {
+        long elapsedNanos = System.nanoTime() - startNanos;
+        return startInstant.plusNanos(elapsedNanos);
+    }
+
+    /**
+     * Returns the wall clock time captured when this monotonic clock was initialized.
+     * <p>
+     * This instant serves as the base time from which all subsequent {@link #instant()}
+     * calls are calculated by adding the elapsed monotonic duration. This ensures
+     * consistency between the monotonic measurements and wall clock time.
+     *
+     * @return the initial wall clock instant when this clock was created
+     * @see #instant()
+     */
+    public Instant startInstant() {
+        return startInstant;
+    }
+
+    /**
+     * Returns the duration elapsed since this clock was initialized.
+     * <p>
+     * The returned duration is calculated using {@link System#nanoTime()}
+     * to ensure monotonic behavior. This duration represents the exact time
+     * span between clock initialization and the current instant.
+     *
+     * @return the duration since clock initialization
+     * @see #startInstant()
+     * @see #instant()
+     */
+    public Duration elapsedTime() {
+        long elapsedNanos = System.nanoTime() - startNanos;
+        return Duration.ofNanos(elapsedNanos);
+    }
+
+    /**
+     * Returns the zone ID of this clock.
+     * <p>
+     * The singleton instance always returns UTC. Clock instances created
+     * via {@link #withZone(ZoneId)} return their configured timezone.
+     *
+     * @return the zone ID
+     */
+    @Override
+    public ZoneId getZone() {
+        return zone;
+    }
+
+    /**
+     * Returns a copy of this clock with the specified timezone.
+     * <p>
+     * Since {@link Instant} instances are timezone-agnostic and the monotonic
+     * property derives from {@link System#nanoTime()}, the returned clock
+     * maintains identical monotonic timing but reports the requested timezone.
+     *
+     * @param zone the target timezone, not null
+     * @return a new clock with the specified timezone
+     * @throws NullPointerException if zone is {@code null}
+     */
+    @Override
+    public Clock withZone(ZoneId zone) {
+        java.util.Objects.requireNonNull(zone, "zone");
+        if (zone.equals(this.zone)) {
+            return this;
+        }
+        return new MonotonicClock(startNanos, startInstant, zone);
+    }
+
+    /**
+     * Creates a new MonotonicClock with the specified timezone.
+     * <p>
+     * This constructor allows creating timezone variants of the clock while
+     * maintaining the same monotonic timing base.
+     *
+     * @param startNanos the monotonic start time in nanoseconds
+     * @param startInstant the wall-clock start time
+     * @param zone the timezone for this clock variant
+     */
+    private MonotonicClock(long startNanos, Instant startInstant, ZoneId zone) {
+        this.startNanos = startNanos;
+        this.startInstant = startInstant;
+        this.zone = zone;
+    }
+}

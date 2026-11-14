@@ -1,0 +1,670 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.impl.model;
+
+import java.io.IOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.PathMatcher;
+import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.apache.maven.api.model.Model;
+import org.apache.maven.api.model.Profile;
+import org.apache.maven.api.services.Interpolator;
+import org.apache.maven.api.services.InterpolatorException;
+import org.apache.maven.api.services.ModelBuilderException;
+import org.apache.maven.api.services.ProjectBuilderException;
+import org.apache.maven.api.services.model.ProfileActivationContext;
+import org.apache.maven.api.services.model.RootLocator;
+
+/**
+ * Describes the environmental context used to determine the activation status of profiles.
+ */
+public class DefaultProfileActivationContext implements ProfileActivationContext {
+
+    record ExistRequest(String path, boolean enableGlob) {}
+
+    enum ModelInfo {
+        ArtifactId,
+        Packaging,
+        BaseDirectory,
+        RootDirectory
+    }
+
+    /**
+     * This class keeps track of information that are used during profile activation.
+     * This allows to cache the activated parent and check if the result of the
+     * activation will be the same by verifying that the used keys are the same.
+     */
+    static class Record {
+        final Map<String, Boolean> usedActiveProfiles;
+        final Map<String, Boolean> usedInactiveProfiles;
+        final Map<String, String> usedSystemProperties;
+        final Map<String, String> usedUserProperties;
+        final Map<String, String> usedModelProperties;
+        final Map<ModelInfo, String> usedModelInfos;
+        final Map<ExistRequest, Boolean> usedExists;
+
+        // Constructor for recording phase - creates mutable maps
+        Record() {
+            this.usedActiveProfiles = new HashMap<>();
+            this.usedInactiveProfiles = new HashMap<>();
+            this.usedSystemProperties = new HashMap<>();
+            this.usedUserProperties = new HashMap<>();
+            this.usedModelProperties = new HashMap<>();
+            this.usedModelInfos = new HashMap<>();
+            this.usedExists = new HashMap<>();
+        }
+
+        // Copy constructor for caching phase - creates immutable maps
+        Record(Record source) {
+            this.usedActiveProfiles = Map.copyOf(source.usedActiveProfiles);
+            this.usedInactiveProfiles = Map.copyOf(source.usedInactiveProfiles);
+            this.usedSystemProperties = Map.copyOf(source.usedSystemProperties);
+            this.usedUserProperties = Map.copyOf(source.usedUserProperties);
+            this.usedModelProperties = Map.copyOf(source.usedModelProperties);
+            this.usedModelInfos = Map.copyOf(source.usedModelInfos);
+            this.usedExists = Map.copyOf(source.usedExists);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o instanceof Record record) {
+                return Objects.equals(usedActiveProfiles, record.usedActiveProfiles)
+                        && Objects.equals(usedInactiveProfiles, record.usedInactiveProfiles)
+                        && Objects.equals(usedSystemProperties, record.usedSystemProperties)
+                        && Objects.equals(usedUserProperties, record.usedUserProperties)
+                        && Objects.equals(usedModelProperties, record.usedModelProperties)
+                        && Objects.equals(usedModelInfos, record.usedModelInfos)
+                        && Objects.equals(usedExists, record.usedExists);
+            }
+            return false;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(
+                    usedActiveProfiles,
+                    usedInactiveProfiles,
+                    usedSystemProperties,
+                    usedUserProperties,
+                    usedModelProperties,
+                    usedModelInfos,
+                    usedExists);
+        }
+
+        boolean matches(DefaultProfileActivationContext context) {
+            return matchesProfiles(usedActiveProfiles, context.activeProfileIds)
+                    && matchesProfiles(usedInactiveProfiles, context.inactiveProfileIds)
+                    && matchesProperties(usedSystemProperties, context.systemProperties)
+                    && matchesProperties(usedUserProperties, context.userProperties)
+                    && matchesProperties(usedModelProperties, context.model.getProperties())
+                    && matchesModelInfos(usedModelInfos, context)
+                    && matchesExists(usedExists, context);
+        }
+
+        private boolean matchesProfiles(Map<String, Boolean> expected, List<String> actual) {
+            return expected.entrySet().stream()
+                    .allMatch(e -> Objects.equals(e.getValue(), actual.contains(e.getKey())));
+        }
+
+        private boolean matchesProperties(Map<String, String> expected, Map<String, String> actual) {
+            return expected.entrySet().stream().allMatch(e -> Objects.equals(e.getValue(), actual.get(e.getKey())));
+        }
+
+        private boolean matchesModelInfos(Map<ModelInfo, String> infos, DefaultProfileActivationContext context) {
+            return infos.entrySet().stream()
+                    .allMatch(e -> Objects.equals(e.getValue(), getModelValue(e.getKey(), context)));
+        }
+
+        private String getModelValue(ModelInfo key, DefaultProfileActivationContext context) {
+            return switch (key) {
+                case ArtifactId -> context.model.getArtifactId();
+                case Packaging -> context.model.getPackaging();
+                case BaseDirectory -> context.doGetModelBaseDirectory();
+                case RootDirectory -> context.doGetModelRootDirectory();
+            };
+        }
+
+        private boolean matchesExists(Map<ExistRequest, Boolean> exists, DefaultProfileActivationContext context) {
+            return exists.entrySet().stream()
+                    .allMatch(e -> Objects.equals(
+                            e.getValue(),
+                            context.doExists(e.getKey().path(), e.getKey().enableGlob())));
+        }
+    }
+
+    private final RootLocator rootLocator;
+    private final Interpolator interpolator;
+
+    private List<String> activeProfileIds = Collections.emptyList();
+    private List<String> inactiveProfileIds = Collections.emptyList();
+    private Map<String, String> systemProperties = Collections.emptyMap();
+    private Map<String, String> userProperties = Collections.emptyMap();
+    private Map<String, String> cascadedProfileProperties = Collections.emptyMap();
+    private Model model;
+    /**
+     * Properties used only for path interpolation (e.g. parent's {@code <properties>} when
+     * activating parent profiles). These are intentionally NOT exposed through
+     * {@link #getModelProperty} so that a parent POM's own declared properties cannot
+     * self-activate its condition-based or property-based profiles (see #13390).
+     * When non-null this map is checked first inside {@link #interpolate} before falling back
+     * to the model's own properties.
+     */
+    private Map<String, String> interpolationProperties;
+
+    final Record record;
+
+    public DefaultProfileActivationContext(RootLocator rootLocator, Interpolator interpolator) {
+        this.rootLocator = rootLocator;
+        this.interpolator = interpolator;
+        this.record = null;
+    }
+
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    public DefaultProfileActivationContext(
+            RootLocator rootLocator,
+            Interpolator interpolator,
+            List<String> activeProfileIds,
+            List<String> inactiveProfileIds,
+            Map<String, String> systemProperties,
+            Map<String, String> userProperties,
+            Model model) {
+        this(
+                rootLocator,
+                interpolator,
+                activeProfileIds,
+                inactiveProfileIds,
+                systemProperties,
+                userProperties,
+                model,
+                null,
+                null);
+    }
+
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    private DefaultProfileActivationContext(
+            RootLocator rootLocator,
+            Interpolator interpolator,
+            List<String> activeProfileIds,
+            List<String> inactiveProfileIds,
+            Map<String, String> systemProperties,
+            Map<String, String> userProperties,
+            Model model,
+            Map<String, String> interpolationProperties,
+            Record record) {
+        this.rootLocator = rootLocator;
+        this.interpolator = interpolator;
+        this.activeProfileIds = activeProfileIds;
+        this.inactiveProfileIds = inactiveProfileIds;
+        this.systemProperties = systemProperties;
+        this.userProperties = userProperties;
+        this.model = model;
+        this.interpolationProperties = interpolationProperties;
+        this.record = record;
+    }
+
+    DefaultProfileActivationContext start() {
+        return new DefaultProfileActivationContext(
+                rootLocator,
+                interpolator,
+                activeProfileIds,
+                inactiveProfileIds,
+                systemProperties,
+                userProperties,
+                model,
+                null,
+                new Record());
+    }
+
+    /**
+     * Like {@link #start()}, but makes the given map available for path interpolation only.
+     * The model's properties (exposed via {@link #getModelProperty}) are NOT overridden, so
+     * POM-declared properties in {@code interpolationProperties} cannot self-activate
+     * property-based or condition-based profiles (see #13390). The map is used exclusively
+     * inside {@link #interpolate} to resolve path placeholders such as {@code ${message.file}}
+     * when activating parent-model file profiles with the parent's own property values
+     * (see #10375).
+     * <p>
+     * The model's other attributes (basedir, packaging, artifactId) are preserved
+     * so that file-exists profile conditions resolve against the original project directory.
+     */
+    DefaultProfileActivationContext start(Map<String, String> interpolationProperties) {
+        return new DefaultProfileActivationContext(
+                rootLocator,
+                interpolator,
+                activeProfileIds,
+                inactiveProfileIds,
+                systemProperties,
+                userProperties,
+                model,
+                interpolationProperties,
+                new Record());
+    }
+
+    Record stop() {
+        Objects.requireNonNull(record, "start() must be called before stop()");
+        return new Record(record); // Return immutable copy for thread-safe caching
+    }
+
+    @Override
+    public boolean isProfileActive(String profileId) {
+        if (record != null) {
+            return record.usedActiveProfiles.computeIfAbsent(profileId, activeProfileIds::contains);
+        } else {
+            return activeProfileIds.contains(profileId);
+        }
+    }
+
+    @Override
+    public boolean isProfileInactive(String profileId) {
+        if (record != null) {
+            return record.usedInactiveProfiles.computeIfAbsent(profileId, inactiveProfileIds::contains);
+        } else {
+            return inactiveProfileIds.contains(profileId);
+        }
+    }
+
+    @Override
+    public String getSystemProperty(String key) {
+        if (record != null) {
+            return record.usedSystemProperties.computeIfAbsent(key, systemProperties::get);
+        } else {
+            return systemProperties.get(key);
+        }
+    }
+
+    /**
+     * Sets the system properties to use for interpolation and profile activation. The system properties are collected
+     * from the runtime environment like {@link System#getProperties()} and environment variables.
+     *
+     * @param systemProperties The system properties, may be {@code null}.
+     * @return This context, never {@code null}.
+     */
+    public DefaultProfileActivationContext setSystemProperties(Map<String, String> systemProperties) {
+        this.systemProperties = unmodifiable(systemProperties);
+        return this;
+    }
+
+    @Override
+    public String getUserProperty(String key) {
+        if (record != null) {
+            return record.usedUserProperties.computeIfAbsent(key, userProperties::get);
+        } else {
+            return userProperties.get(key);
+        }
+    }
+
+    /**
+     * Sets the user properties to use for interpolation and profile activation. The user properties have been
+     * configured directly by the user on his discretion, e.g. via the {@code -Dkey=value} parameter on the command
+     * line.
+     *
+     * @param userProperties The user properties, may be {@code null}.
+     * @return This context, never {@code null}.
+     */
+    public DefaultProfileActivationContext setUserProperties(Map<String, String> userProperties) {
+        this.userProperties = unmodifiable(userProperties);
+        return this;
+    }
+
+    @Override
+    public String getModelArtifactId() {
+        if (record != null) {
+            return record.usedModelInfos.computeIfAbsent(ModelInfo.ArtifactId, k -> model.getArtifactId());
+        } else {
+            return model.getArtifactId();
+        }
+    }
+
+    @Override
+    public String getModelPackaging() {
+        if (record != null) {
+            return record.usedModelInfos.computeIfAbsent(ModelInfo.Packaging, k -> model.getPackaging());
+        } else {
+            return model.getPackaging();
+        }
+    }
+
+    @Override
+    public String getModelProperty(String key) {
+        if (record != null) {
+            return record.usedModelProperties.computeIfAbsent(
+                    key, k -> model.getProperties().get(k));
+        } else {
+            return model.getProperties().get(key);
+        }
+    }
+
+    /**
+     * Gets a model property INCLUDING cascaded profile properties.
+     * This should ONLY be used for profile activation to enable cascading.
+     * Regular property lookups should use getModelProperty() which excludes cascaded properties.
+     */
+    private String getModelPropertyForActivation(String key) {
+        // Do NOT use the usedModelProperties cache here because getModelProperty()
+        // may have already cached a value without cascaded properties for this key.
+        // Cascaded properties change between activation rounds, so we must always
+        // check them fresh.
+        String value = cascadedProfileProperties.get(key);
+        if (value != null) {
+            return value;
+        }
+        // Fall back to regular model property (which may use the cache)
+        return getModelProperty(key);
+    }
+
+    /**
+     * Gets a property ONLY from cascaded profile properties (properties contributed by
+     * previously-activated profiles during cascading activation).
+     * Unlike {@link #getModelPropertyForActivation}, this does NOT fall back to the model's
+     * own {@code <properties>} — a POM's static properties must not self-activate profiles
+     * via {@link org.apache.maven.impl.model.profile.PropertyProfileActivator}.
+     */
+    @Override
+    public String getCascadedProfileProperty(String key) {
+        return cascadedProfileProperties.get(key);
+    }
+
+    @Override
+    public String getModelBaseDirectory() {
+        if (record != null) {
+            return record.usedModelInfos.computeIfAbsent(ModelInfo.BaseDirectory, k -> doGetModelBaseDirectory());
+        } else {
+            return doGetModelBaseDirectory();
+        }
+    }
+
+    public String doGetModelBaseDirectory() {
+        Path basedir = model.getProjectDirectory();
+        return basedir != null ? basedir.toAbsolutePath().toString() : null;
+    }
+
+    @Override
+    public String getModelRootDirectory() {
+        if (record != null) {
+            return record.usedModelInfos.computeIfAbsent(ModelInfo.RootDirectory, k -> doGetModelRootDirectory());
+        } else {
+            return doGetModelRootDirectory();
+        }
+    }
+
+    private String doGetModelRootDirectory() {
+        Path basedir = model != null ? model.getProjectDirectory() : null;
+        Path rootdir = rootLocator != null ? rootLocator.findRoot(basedir) : null;
+        return rootdir != null ? rootdir.toAbsolutePath().toString() : null;
+    }
+
+    public DefaultProfileActivationContext setModel(Model model) {
+        this.model = model;
+        return this;
+    }
+
+    /**
+     * Returns a sandboxed copy of this context suitable for evaluating profiles in
+     * repository-resolved (external) models — dependency POMs, parent POMs, and imported BOMs.
+     * <p>
+     * The sandboxed context:
+     * <ul>
+     *   <li><b>Preserves system properties</b> ({@code java.version}, {@code os.name}, …)
+     *       so JDK/OS activation works.</li>
+     *   <li><b>Suppresses user properties</b> (consumer {@code -D} flags): they were not
+     *       set for the dependency and must not accidentally activate its profiles.</li>
+     *   <li><b>Suppresses model properties</b>: a dependency POM's own
+     *       {@code <properties>} must not activate its own property-based or
+     *       condition-based profiles (see #13390). Both {@link org.apache.maven.impl.model.profile.PropertyProfileActivator}
+     *       and {@link org.apache.maven.impl.model.profile.ConditionProfileActivator}
+     *       read model properties directly via {@code getModelProperty()}, so the
+     *       sandbox overrides that method to return {@code null}.</li>
+     *   <li><b>Disables file existence checks</b>: the publisher's file system paths do not
+     *       exist in the consumer's environment.  File-activated profiles should be
+     *       pre-filtered by the caller before reaching this context (the sandbox's
+     *       {@code exists()} returns {@code false} as a safety net, but that alone would
+     *       incorrectly activate {@code <missing>} profiles).</li>
+     * </ul>
+     *
+     * @return a sandboxed {@link ProfileActivationContext} for external model evaluation
+     */
+    public ProfileActivationContext withoutUserPropertiesAndFilesystem() {
+        return new ProfileActivationContext() {
+            @Override
+            public boolean isProfileActive(String profileId) {
+                return DefaultProfileActivationContext.this.isProfileActive(profileId);
+            }
+
+            @Override
+            public boolean isProfileInactive(String profileId) {
+                return DefaultProfileActivationContext.this.isProfileInactive(profileId);
+            }
+
+            @Override
+            public String getSystemProperty(String key) {
+                return DefaultProfileActivationContext.this.getSystemProperty(key);
+            }
+
+            /** User properties are suppressed: consumer {@code -D} flags do not activate dependency profiles. */
+            @Override
+            public String getUserProperty(String key) {
+                return null;
+            }
+
+            /**
+             * Model properties are suppressed: a dependency POM's own {@code <properties>} must not
+             * activate its own profiles. Both {@link PropertyProfileActivator} and
+             * {@link org.apache.maven.impl.model.profile.ConditionProfileActivator} call
+             * {@code getModelProperty()} directly, so returning {@code null} here closes the gap.
+             */
+            @Override
+            public String getModelProperty(String key) {
+                return null;
+            }
+
+            @Override
+            public String getModelArtifactId() {
+                return DefaultProfileActivationContext.this.getModelArtifactId();
+            }
+
+            @Override
+            public String getModelPackaging() {
+                return DefaultProfileActivationContext.this.getModelPackaging();
+            }
+
+            @Override
+            public String getModelRootDirectory() {
+                return DefaultProfileActivationContext.this.getModelRootDirectory();
+            }
+
+            @Override
+            public String getModelBaseDirectory() {
+                return DefaultProfileActivationContext.this.getModelBaseDirectory();
+            }
+
+            @Override
+            public String interpolatePath(String path) throws InterpolatorException {
+                return DefaultProfileActivationContext.this.interpolatePath(path);
+            }
+
+            /**
+             * File existence checks are disabled for external models: publisher paths do not
+             * exist in the consumer's environment.  File-activated profiles are pre-filtered
+             * before reaching this context (see {@code getActiveProfiles}), so this method
+             * should not normally be called; it returns {@code false} as a safety net.
+             */
+            @Override
+            public boolean exists(String path, boolean glob) {
+                return false;
+            }
+
+            @Override
+            public void addProfileProperties(Collection<Profile> activatedProfiles) {
+                // Sandboxed context: profile properties are not propagated
+            }
+        };
+    }
+
+    @Override
+    public String interpolatePath(String path) throws InterpolatorException {
+        return DefaultPathTranslator.alignToBaseDirectory(interpolate(path), model.getProjectDirectory());
+    }
+
+    // Lookup order matches ConditionProfileActivator.doGetProperty:
+    // user → system → cascaded/model (for file-existence conditions).
+    private String interpolate(String path) throws InterpolatorException {
+        if (path == null) {
+            return null;
+        }
+        return interpolator.interpolate(path, s -> {
+            if ("basedir".equals(s) || "project.basedir".equals(s)) {
+                return getModelBaseDirectory();
+            }
+            if ("project.rootDirectory".equals(s)) {
+                return getModelRootDirectory();
+            }
+            // Check interpolationProperties first: these are parent-model properties made
+            // available for path interpolation (e.g. ${message.file} in a file profile
+            // condition) without being exposed through getModelProperty() and thus without
+            // being able to self-activate property-based or condition-based profiles (#13390).
+            String r = interpolationProperties != null ? interpolationProperties.get(s) : null;
+            if (r == null) {
+                r = getModelProperty(s);
+            }
+            if (r == null) {
+                r = getUserProperty(s);
+            }
+            if (r == null) {
+                r = getSystemProperty(s);
+            }
+            if (r == null) {
+                r = getModelPropertyForActivation(s);
+            }
+            return r;
+        });
+    }
+
+    @Override
+    public boolean exists(String path, boolean enableGlob) throws ModelBuilderException {
+        if (record != null) {
+            return record.usedExists.computeIfAbsent(
+                    new ExistRequest(path, enableGlob), r -> doExists(r.path, r.enableGlob));
+        } else {
+            return doExists(path, enableGlob);
+        }
+    }
+
+    private boolean doExists(String path, boolean enableGlob) throws ModelBuilderException {
+        String fixed, glob;
+        if (enableGlob) {
+            // split before aligning to the base directory: '*' and '?' are not valid in a Windows path
+            String pattern = interpolate(path);
+            int asteriskIndex = pattern.indexOf('*');
+            int questionMarkIndex = pattern.indexOf('?');
+            int firstWildcardIndex = questionMarkIndex < 0
+                    ? asteriskIndex
+                    : asteriskIndex < 0 ? questionMarkIndex : Math.min(asteriskIndex, questionMarkIndex);
+            if (firstWildcardIndex < 0) {
+                fixed = pattern;
+                glob = "";
+            } else {
+                String prefix = pattern.substring(0, firstWildcardIndex);
+                int lastSep = Math.max(prefix.lastIndexOf('/'), prefix.lastIndexOf('\\'));
+                fixed = pattern.substring(0, lastSep + 1);
+                // '\' is an escape character in the glob syntax, on Windows too, where '/' matches the separator
+                glob = pattern.substring(lastSep + 1).replace('\\', '/');
+            }
+            fixed = DefaultPathTranslator.alignToBaseDirectory(fixed, model.getProjectDirectory());
+        } else {
+            fixed = interpolatePath(path);
+            glob = "";
+        }
+        Path fixedPath = Paths.get(fixed);
+        return doExists(fixedPath, glob);
+    }
+
+    private static Boolean doExists(Path fixedPath, String glob) {
+        if (fixedPath == null || !Files.exists(fixedPath)) {
+            return false;
+        }
+        if (glob != null && !glob.isEmpty()) {
+            try {
+                PathMatcher matcher = fixedPath.getFileSystem().getPathMatcher("glob:" + glob);
+                AtomicBoolean found = new AtomicBoolean(false);
+                Files.walkFileTree(fixedPath, new SimpleFileVisitor<>() {
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                        if (found.get() || matcher.matches(fixedPath.relativize(file))) {
+                            found.set(true);
+                            return FileVisitResult.TERMINATE;
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+                });
+                return found.get();
+            } catch (IOException e) {
+                throw new ProjectBuilderException(
+                        "Unable to verify file existence for '" + glob + "' inside '" + fixedPath + "'", e);
+            }
+        }
+        return true;
+    }
+
+    private static Map<String, String> unmodifiable(Map<String, String> map) {
+        return map != null ? Collections.unmodifiableMap(map) : Collections.emptyMap();
+    }
+
+    // Cascading profile activation methods
+
+    @Override
+    public void addProfileProperties(Collection<Profile> activatedProfiles) {
+        // Inject properties from activated profiles for cascading activation
+        // Store them separately instead of mutating the model
+        if (activatedProfiles != null && !activatedProfiles.isEmpty()) {
+            Map<String, String> newCascadedProperties = new HashMap<>(cascadedProfileProperties);
+
+            // Add properties from each activated profile
+            for (Profile profile : activatedProfiles) {
+                if (profile.getProperties() != null) {
+                    newCascadedProperties.putAll(profile.getProperties());
+                }
+            }
+
+            // Update the cascaded properties map
+            this.cascadedProfileProperties = Collections.unmodifiableMap(newCascadedProperties);
+        }
+    }
+
+    /**
+     * Clear all cascaded profile properties.
+     * This should be called after profile activation is complete to prevent cascaded properties
+     * from leaking into subsequent uses of the context.
+     */
+    @Override
+    public void clearCascadedProfileProperties() {
+        this.cascadedProfileProperties = Collections.emptyMap();
+    }
+}

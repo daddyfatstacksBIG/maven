@@ -1,0 +1,616 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.internal.aether;
+
+import javax.inject.Inject;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.maven.api.RepositoryEvent;
+import org.apache.maven.api.RepositoryEventType;
+import org.apache.maven.api.RepositoryListener;
+import org.apache.maven.artifact.InvalidRepositoryException;
+import org.apache.maven.artifact.repository.ArtifactRepository;
+import org.apache.maven.bridge.MavenRepositorySystem;
+import org.apache.maven.eventspy.internal.EventSpyDispatcher;
+import org.apache.maven.execution.DefaultMavenExecutionRequest;
+import org.apache.maven.execution.MavenExecutionRequest;
+import org.apache.maven.impl.InternalSession;
+import org.apache.maven.internal.impl.DefaultTypeRegistry;
+import org.apache.maven.rtinfo.RuntimeInformation;
+import org.apache.maven.settings.Mirror;
+import org.apache.maven.settings.Server;
+import org.codehaus.plexus.configuration.PlexusConfiguration;
+import org.codehaus.plexus.testing.PlexusTest;
+import org.codehaus.plexus.util.xml.Xpp3Dom;
+import org.eclipse.aether.ConfigurationProperties;
+import org.eclipse.aether.collection.VersionFilterBuilder;
+import org.eclipse.aether.repository.AuthenticationSelector;
+import org.eclipse.aether.repository.RemoteRepository;
+import org.eclipse.aether.repository.RepositoryPolicy;
+import org.eclipse.aether.version.VersionScheme;
+import org.junit.jupiter.api.Test;
+
+import static org.codehaus.plexus.testing.PlexusExtension.getBasedir;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrowsExactly;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * UT for {@link DefaultRepositorySystemSessionFactory}.
+ */
+@PlexusTest
+public class DefaultRepositorySystemSessionFactoryTest {
+    @Inject
+    protected MavenRepositorySystem mavenRepositorySystem;
+
+    @Inject
+    protected EventSpyDispatcher eventSpyDispatcher;
+
+    @Inject
+    protected org.eclipse.aether.RepositorySystem aetherRepositorySystem;
+
+    @Inject
+    protected RuntimeInformation information;
+
+    @Inject
+    protected DefaultTypeRegistry defaultTypeRegistry;
+
+    @Inject
+    protected VersionScheme versionScheme;
+
+    @Inject
+    protected VersionFilterBuilder versionFilterBuilder;
+
+    @Test
+    void exposesRepositoryEventsThroughMavenApi() throws InvalidRepositoryException {
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        org.eclipse.aether.RepositorySystemSession resolverSession = systemSessionFactory.newRepositorySession(request);
+        InternalSession session = mock(InternalSession.class);
+        AtomicReference<RepositoryEvent> received = new AtomicReference<>();
+        RepositoryListener listener = new RepositoryListener() {
+            @Override
+            public void artifactResolved(RepositoryEvent event) {
+                received.set(event);
+            }
+        };
+        when(session.getListeners()).thenReturn(List.of(listener));
+        InternalSession.associate(resolverSession, session);
+
+        resolverSession
+                .getRepositoryListener()
+                .artifactResolved(new org.eclipse.aether.RepositoryEvent.Builder(
+                                resolverSession, org.eclipse.aether.RepositoryEvent.EventType.ARTIFACT_RESOLVED)
+                        .build());
+
+        assertNotNull(received.get());
+        assertEquals(RepositoryEventType.ARTIFACT_RESOLVED, received.get().type());
+    }
+
+    @Test
+    void isNoSnapshotUpdatesTest() throws InvalidRepositoryException {
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        assertNull(systemSessionFactory.newRepositorySession(request).getUpdatePolicy());
+
+        request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        request.setNoSnapshotUpdates(true);
+        assertEquals(
+                RepositoryPolicy.UPDATE_POLICY_NEVER,
+                systemSessionFactory.newRepositorySession(request).getUpdatePolicy());
+    }
+
+    @Test
+    void isSnapshotUpdatesTest() throws InvalidRepositoryException {
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        request.setUpdateSnapshots(true);
+        assertEquals(
+                RepositoryPolicy.UPDATE_POLICY_ALWAYS,
+                systemSessionFactory.newRepositorySession(request).getUpdatePolicy());
+    }
+
+    @Test
+    void artifactsUpdatePolicyTest() throws InvalidRepositoryException {
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        // No policy set: legacy path, no per-type policy
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        org.eclipse.aether.RepositorySystemSession session = systemSessionFactory.newRepositorySession(request);
+        assertNull(session.getArtifactUpdatePolicy());
+        assertNull(session.getMetadataUpdatePolicy());
+
+        // Artifacts policy only
+        request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        request.setArtifactsUpdatePolicy(RepositoryPolicy.UPDATE_POLICY_ALWAYS);
+        session = systemSessionFactory.newRepositorySession(request);
+        assertEquals(RepositoryPolicy.UPDATE_POLICY_ALWAYS, session.getArtifactUpdatePolicy());
+        assertNull(session.getMetadataUpdatePolicy());
+
+        // Metadata policy only
+        request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        request.setMetadataUpdatePolicy(RepositoryPolicy.UPDATE_POLICY_NEVER);
+        session = systemSessionFactory.newRepositorySession(request);
+        assertNull(session.getArtifactUpdatePolicy());
+        assertEquals(RepositoryPolicy.UPDATE_POLICY_NEVER, session.getMetadataUpdatePolicy());
+
+        // Both per-type policies set (interval:N)
+        request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        request.setArtifactsUpdatePolicy("interval:30");
+        request.setMetadataUpdatePolicy(RepositoryPolicy.UPDATE_POLICY_DAILY);
+        session = systemSessionFactory.newRepositorySession(request);
+        assertEquals("interval:30", session.getArtifactUpdatePolicy());
+        assertEquals(RepositoryPolicy.UPDATE_POLICY_DAILY, session.getMetadataUpdatePolicy());
+    }
+
+    @Test
+    void wagonProviderConfigurationTest() throws InvalidRepositoryException {
+        Server server = new Server();
+        server.setId("repository");
+        server.setUsername("jason");
+        server.setPassword("abc123");
+        Xpp3Dom configuration = new Xpp3Dom("configuration");
+        Xpp3Dom wagonProvider = new Xpp3Dom("wagonProvider");
+        wagonProvider.setValue("httpclient");
+        configuration.addChild(wagonProvider);
+        server.setConfiguration(configuration);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        List<Server> servers = new ArrayList<>();
+        servers.add(server);
+        request.setServers(servers);
+
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        PlexusConfiguration plexusConfiguration = (PlexusConfiguration) systemSessionFactory
+                .newRepositorySession(request)
+                .getConfigProperties()
+                .get("aether.transport.wagon.config.repository");
+        assertNotNull(plexusConfiguration);
+        assertEquals(0, plexusConfiguration.getChildCount());
+    }
+
+    @Test
+    void httpConfigurationWithHttpHeadersTest() throws InvalidRepositoryException {
+        Server server = new Server();
+        server.setId("repository");
+        server.setUsername("jason");
+        server.setPassword("abc123");
+        Xpp3Dom httpConfiguration = new Xpp3Dom("httpConfiguration");
+        Xpp3Dom httpHeaders = new Xpp3Dom("httpHeaders");
+        Xpp3Dom property = new Xpp3Dom("property");
+        Xpp3Dom headerName = new Xpp3Dom("name");
+        headerName.setValue("header");
+        Xpp3Dom headerValue = new Xpp3Dom("value");
+        headerValue.setValue("value");
+        property.addChild(headerName);
+        property.addChild(headerValue);
+        httpHeaders.addChild(property);
+        httpConfiguration.addChild(httpHeaders);
+
+        server.setConfiguration(httpConfiguration);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        List<Server> servers = new ArrayList<>();
+        servers.add(server);
+        request.setServers(servers);
+
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        Map<String, String> headers = (Map<String, String>) systemSessionFactory
+                .newRepositorySession(request)
+                .getConfigProperties()
+                .get(ConfigurationProperties.HTTP_HEADERS + "." + server.getId());
+        assertNotNull(headers);
+        assertEquals(1, headers.size());
+        assertEquals("value", headers.get("header"));
+    }
+
+    @Test
+    void connectTimeoutConfigurationTest() throws InvalidRepositoryException {
+        Server server = new Server();
+        server.setId("repository");
+        server.setUsername("jason");
+        server.setPassword("abc123");
+        Xpp3Dom configuration = new Xpp3Dom("configuration");
+        Xpp3Dom connectTimeoutConfiguration = new Xpp3Dom("connectTimeout");
+        connectTimeoutConfiguration.setValue("3000");
+        configuration.addChild(connectTimeoutConfiguration);
+
+        server.setConfiguration(configuration);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        List<Server> servers = new ArrayList<>();
+        servers.add(server);
+        request.setServers(servers);
+
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        int connectionTimeout = (Integer) systemSessionFactory
+                .newRepositorySession(request)
+                .getConfigProperties()
+                .get(ConfigurationProperties.CONNECT_TIMEOUT + "." + server.getId());
+        assertEquals(3000, connectionTimeout);
+    }
+
+    @Test
+    void connectionTimeoutFromHttpConfigurationTest() throws InvalidRepositoryException {
+        Server server = new Server();
+        server.setId("repository");
+        server.setUsername("jason");
+        server.setPassword("abc123");
+
+        Xpp3Dom configuration = new Xpp3Dom("configuration");
+        Xpp3Dom httpConfiguration = new Xpp3Dom("httpConfiguration");
+        Xpp3Dom all = new Xpp3Dom("all");
+        Xpp3Dom connectTimeoutConfiguration = new Xpp3Dom("connectionTimeout");
+        connectTimeoutConfiguration.setValue("3000");
+
+        all.addChild(connectTimeoutConfiguration);
+        httpConfiguration.addChild(all);
+        configuration.addChild(httpConfiguration);
+
+        server.setConfiguration(configuration);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        List<Server> servers = new ArrayList<>();
+        servers.add(server);
+        request.setServers(servers);
+
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        int connectionTimeout = (Integer) systemSessionFactory
+                .newRepositorySession(request)
+                .getConfigProperties()
+                .get(ConfigurationProperties.CONNECT_TIMEOUT + "." + server.getId());
+        assertEquals(3000, connectionTimeout);
+    }
+
+    @Test
+    void requestTimeoutConfigurationTest() throws InvalidRepositoryException {
+        Server server = new Server();
+        server.setId("repository");
+        server.setUsername("jason");
+        server.setPassword("abc123");
+        Xpp3Dom configuration = new Xpp3Dom("configuration");
+        Xpp3Dom requestTimeoutConfiguration = new Xpp3Dom("requestTimeout");
+        requestTimeoutConfiguration.setValue("3000");
+        configuration.addChild(requestTimeoutConfiguration);
+
+        server.setConfiguration(configuration);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        List<Server> servers = new ArrayList<>();
+        servers.add(server);
+        request.setServers(servers);
+
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        int requestTimeout = (Integer) systemSessionFactory
+                .newRepositorySession(request)
+                .getConfigProperties()
+                .get(ConfigurationProperties.REQUEST_TIMEOUT + "." + server.getId());
+        assertEquals(3000, requestTimeout);
+    }
+
+    @Test
+    void readTimeoutFromHttpConfigurationTest() throws InvalidRepositoryException {
+        Server server = new Server();
+        server.setId("repository");
+        server.setUsername("jason");
+        server.setPassword("abc123");
+
+        Xpp3Dom configuration = new Xpp3Dom("configuration");
+        Xpp3Dom httpConfiguration = new Xpp3Dom("httpConfiguration");
+        Xpp3Dom all = new Xpp3Dom("all");
+        Xpp3Dom readTimeoutConfiguration = new Xpp3Dom("readTimeout");
+        readTimeoutConfiguration.setValue("3000");
+
+        all.addChild(readTimeoutConfiguration);
+        httpConfiguration.addChild(all);
+        configuration.addChild(httpConfiguration);
+
+        server.setConfiguration(configuration);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        List<Server> servers = new ArrayList<>();
+        servers.add(server);
+        request.setServers(servers);
+
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        int requestTimeout = (Integer) systemSessionFactory
+                .newRepositorySession(request)
+                .getConfigProperties()
+                .get(ConfigurationProperties.REQUEST_TIMEOUT + "." + server.getId());
+        assertEquals(3000, requestTimeout);
+    }
+
+    @Test
+    void transportConfigurationTest() throws InvalidRepositoryException {
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+
+        // native
+        Properties properties = new Properties();
+        properties.setProperty("maven.resolver.transport", "apache");
+        request.setSystemProperties(properties);
+        Map<String, Object> configProperties =
+                systemSessionFactory.newRepositorySession(request).getConfigProperties();
+        assertEquals(String.valueOf(Float.MAX_VALUE), configProperties.get("aether.priority.FileTransporterFactory"));
+        assertEquals(String.valueOf(Float.MAX_VALUE), configProperties.get("aether.priority.ApacheTransporterFactory"));
+        properties.remove("maven.resolver.transport");
+
+        // wagon
+        properties.setProperty("maven.resolver.transport", "wagon");
+        request.setSystemProperties(properties);
+        assertEquals(
+                String.valueOf(Float.MAX_VALUE),
+                systemSessionFactory
+                        .newRepositorySession(request)
+                        .getConfigProperties()
+                        .get("aether.priority.WagonTransporterFactory"));
+        properties.remove("maven.resolver.transport");
+
+        // illegal
+        properties.setProperty("maven.resolver.transport", "illegal");
+        request.setSystemProperties(properties);
+        IllegalArgumentException exception = assertThrowsExactly(
+                IllegalArgumentException.class, () -> systemSessionFactory.newRepositorySession(request));
+        assertEquals(
+                "Unknown resolver transport 'illegal'. Supported transports are: wagon, apache, jdk, auto",
+                exception.getMessage());
+        properties.remove("maven.resolver.transport");
+    }
+
+    @Test
+    void credentialsServedForOriginDeclaredOnlyByServer() throws InvalidRepositoryException {
+        MavenExecutionRequest request = requestWithServer(
+                serverWithRepositoryOrigins("internal", "https://repo.example.org", "https://mirror.example.org:8443"));
+
+        AuthenticationSelector selector = authenticationSelector(request);
+
+        assertNotNull(selector.getAuthentication(repository("internal", "https://repo.example.org/releases/")));
+        assertNotNull(selector.getAuthentication(repository("internal", "https://mirror.example.org:8443/repo/")));
+        assertNull(selector.getAuthentication(repository("internal", "https://evil.example.org/releases/")));
+    }
+
+    @Test
+    void credentialsServedForOriginDeclaredOnlyByServerInStrictScope() throws InvalidRepositoryException {
+        MavenExecutionRequest request =
+                requestWithServer(serverWithRepositoryOrigins("internal", "https://repo.example.org"));
+        Properties properties = new Properties();
+        properties.put(DefaultRepositorySystemSessionFactory.MAVEN_REPOSITORY_CREDENTIAL_SCOPE, "strict");
+        request.setSystemProperties(properties);
+
+        AuthenticationSelector selector = authenticationSelector(request);
+
+        assertNotNull(selector.getAuthentication(repository("internal", "https://repo.example.org/releases/")));
+        assertNull(selector.getAuthentication(repository("internal", "https://evil.example.org/releases/")));
+    }
+
+    @Test
+    void serverWithoutRepositoryOriginsIsRefusedInStrictScope() throws InvalidRepositoryException {
+        MavenExecutionRequest request = requestWithServer(serverWithRepositoryOrigins("internal"));
+        Properties properties = new Properties();
+        properties.put(DefaultRepositorySystemSessionFactory.MAVEN_REPOSITORY_CREDENTIAL_SCOPE, "strict");
+        request.setSystemProperties(properties);
+
+        AuthenticationSelector selector = authenticationSelector(request);
+
+        assertNull(selector.getAuthentication(repository("internal", "https://repo.example.org/releases/")));
+    }
+
+    @Test
+    void serverRepositoryOriginsAddToMirrorOrigins() throws InvalidRepositoryException {
+        MavenExecutionRequest request =
+                requestWithServer(serverWithRepositoryOrigins("internal", "https://repo.example.org"));
+        Mirror mirror = new Mirror();
+        mirror.setId("internal");
+        mirror.setUrl("https://mirror.example.org/repo/");
+        mirror.setMirrorOf("*");
+        request.setMirrors(new ArrayList<>(List.of(mirror)));
+
+        AuthenticationSelector selector = authenticationSelector(request);
+
+        assertNotNull(selector.getAuthentication(repository("internal", "https://mirror.example.org/repo/")));
+        assertNotNull(selector.getAuthentication(repository("internal", "https://repo.example.org/releases/")));
+        assertNull(selector.getAuthentication(repository("internal", "https://evil.example.org/releases/")));
+    }
+
+    @Test
+    void malformedServerRepositoryOriginIsIgnored() throws InvalidRepositoryException {
+        MavenExecutionRequest request = requestWithServer(serverWithRepositoryOrigins("internal", "not an origin"));
+        Properties properties = new Properties();
+        properties.put(DefaultRepositorySystemSessionFactory.MAVEN_REPOSITORY_CREDENTIAL_SCOPE, "strict");
+        request.setSystemProperties(properties);
+
+        AuthenticationSelector selector = authenticationSelector(request);
+
+        assertNull(selector.getAuthentication(repository("internal", "https://repo.example.org/releases/")));
+    }
+
+    @Test
+    void sessionExtendersReceiveOriginBoundAuthenticationSelector() throws InvalidRepositoryException {
+        MavenExecutionRequest request =
+                requestWithServer(serverWithRepositoryOrigins("internal", "https://repo.example.org"));
+        AtomicReference<AuthenticationSelector> captured = new AtomicReference<>();
+        RepositorySystemSessionExtender extender =
+                (mavenExecutionRequest, configProperties, mirrorSelector, proxySelector, authenticationSelector) ->
+                        captured.set(authenticationSelector);
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Map.of("capture", extender),
+                versionFilterBuilder);
+
+        systemSessionFactory.newRepositorySession(request);
+
+        AuthenticationSelector selector = captured.get();
+        assertNotNull(selector);
+        assertNotNull(selector.getAuthentication(repository("internal", "https://repo.example.org/releases/")));
+        assertNull(selector.getAuthentication(repository("internal", "https://evil.example.org/releases/")));
+    }
+
+    private static Server serverWithRepositoryOrigins(String id, String... repositoryOrigins) {
+        Server server = new Server();
+        server.setId(id);
+        server.setUsername("jason");
+        server.setPassword("abc123");
+        server.setRepositoryOrigins(List.of(repositoryOrigins));
+        return server;
+    }
+
+    private MavenExecutionRequest requestWithServer(Server server) throws InvalidRepositoryException {
+        MavenExecutionRequest request = new DefaultMavenExecutionRequest();
+        request.setLocalRepository(getLocalRepository());
+        request.setServers(new ArrayList<>(List.of(server)));
+        return request;
+    }
+
+    private AuthenticationSelector authenticationSelector(MavenExecutionRequest request) {
+        DefaultRepositorySystemSessionFactory systemSessionFactory = new DefaultRepositorySystemSessionFactory(
+                aetherRepositorySystem,
+                eventSpyDispatcher,
+                information,
+                defaultTypeRegistry,
+                versionScheme,
+                Collections.emptyMap(),
+                versionFilterBuilder);
+        return systemSessionFactory.newRepositorySession(request).getAuthenticationSelector();
+    }
+
+    private static RemoteRepository repository(String id, String url) {
+        return new RemoteRepository.Builder(id, "default", url).build();
+    }
+
+    protected ArtifactRepository getLocalRepository() throws InvalidRepositoryException {
+        File repoDir = new File(getBasedir(), "target/local-repo").getAbsoluteFile();
+
+        return mavenRepositorySystem.createLocalRepository(repoDir);
+    }
+}

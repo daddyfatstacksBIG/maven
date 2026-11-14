@@ -1,0 +1,9 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+  <mirrors>
+    <mirror>
+      <id>test.deployment.repository.mirror</id>
+      <mirrorOf>test.deployment.repository</mirrorOf>
+      <url>INVALID</url>
+    </mirror>
+  </mirrors>
+</settings>

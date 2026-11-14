@@ -1,0 +1,88 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.nio.file.Path;
+import java.util.Collection;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+public class MavenIT0085TransitiveSystemScopeTest extends AbstractMavenIntegrationTestCase {
+
+    /**
+     * Verify that system-scoped dependencies get resolved with system scope
+     * when they are resolved transitively via another (non-system)
+     * dependency. Inherited scope should not apply in the case of
+     * system-scoped dependencies, no matter where they are.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testit0085() throws Exception {
+        Path testDir = extractResources("it0085");
+
+        Verifier verifier = newVerifier(testDir);
+        verifier.setAutoclean(false);
+        verifier.deleteDirectory("target");
+        verifier.deleteArtifacts("org.apache.maven.its.it0085");
+        verifier.getSystemProperties().setProperty("test.home", testDir.toString());
+        verifier.filterFile("settings-template.xml", "settings.xml");
+        verifier.addCliArgument("--settings");
+        verifier.addCliArgument("settings.xml");
+        verifier.addCliArgument("validate");
+        verifier.addCliArgument("-Dmaven.model.dependencyInterpolation.full=true");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+
+        Collection<String> lines = verifier.loadLines("target/test.txt");
+        assertTrue(lines.contains("system.jar"), lines.toString());
+    }
+
+    /**
+     * Verify that by default the path of a system-scope dependency declared by a POM resolved from a
+     * repository is not interpolated from the session properties, so the expression is left as
+     * written and reported as an invalid path.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testit0085DefaultLeavesPropertyUnresolved() throws Exception {
+        Path testDir = extractResources("it0085");
+
+        Verifier verifier = newVerifier(testDir);
+        verifier.setAutoclean(false);
+        verifier.deleteDirectory("target");
+        verifier.deleteArtifacts("org.apache.maven.its.it0085");
+        verifier.getSystemProperties().setProperty("test.home", testDir.toString());
+        verifier.filterFile("settings-template.xml", "settings.xml");
+        verifier.addCliArgument("--settings");
+        verifier.addCliArgument("settings.xml");
+        verifier.addCliArgument("validate");
+        try {
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+            fail("Build should not succeed");
+        } catch (VerificationException e) {
+            verifier.verifyTextInLog("must specify an absolute path but is ${test.home}/system.jar");
+        }
+    }
+}

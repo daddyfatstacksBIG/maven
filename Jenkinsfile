@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
@@ -17,160 +17,63 @@
  * under the License.
  */
 
-properties([buildDiscarder(logRotator(artifactNumToKeepStr: '5', numToKeepStr: env.BRANCH_NAME=='master'?'5':'1'))])
-
-def buildOs = 'linux'
-def buildJdk = '8'
-def buildMvn = '3.6.3'
-def runITsOses = ['linux', 'windows']
-def runITsJdks = ['8', '11']
-def runITsMvn = '3.6.3'
-def runITscommand = "mvn clean install -Prun-its,embedded -B -U -V" // -DmavenDistro=... -Dmaven.test.failure.ignore=true
-def tests
-
-try {
-
-def osNode = jenkinsEnv.labelForOS(buildOs) 
-node(jenkinsEnv.nodeSelection(osNode)) {
-    dir('build') {
-        stage('Checkout') {
-            checkout scm
-        }
-
-        def WORK_DIR=pwd()
-        def MAVEN_GOAL='verify'
-
-        stage('Configure deploy') {
-           if (env.BRANCH_NAME == 'master'){
-               MAVEN_GOAL='deploy'
-           }
-        }
-
-        stage('Build / Unit Test') {
-            String jdkName = jenkinsEnv.jdkFromVersion(buildOs, buildJdk)
-            String mvnName = jenkinsEnv.mvnFromVersion(buildOs, buildMvn)
-            withMaven(jdk: jdkName, maven: mvnName, mavenLocalRepo:"${WORK_DIR}/.repository", options:[
-                artifactsPublisher(disabled: false),
-                junitPublisher(ignoreAttachments: false),
-                findbugsPublisher(disabled: true),
-                openTasksPublisher(disabled: true),
-                dependenciesFingerprintPublisher(disabled: false),
-                invokerPublisher(disabled: true),
-                pipelineGraphPublisher(disabled: false)
-            ], publisherStrategy: 'EXPLICIT') {
-                // For now: maven-wrapper contains 2 poms sharing the same outputDirectory, so separate clean
-                sh "mvn clean"
-                sh "mvn ${MAVEN_GOAL} -B -U -e -fae -V -Dmaven.test.failure.ignore=true -P versionlessMavenDist"
+pipeline {
+  agent none
+  // save some io during the build
+  options {
+    skipDefaultCheckout()
+    durabilityHint('PERFORMANCE_OPTIMIZED')
+    disableRestartFromStage()
+  }
+  stages {
+    stage("Build / Test - JDK17") {
+      agent { node { label 'ubuntu' } }
+      steps {
+        timeout(time: 210, unit: 'MINUTES') {
+          checkout scm
+          mavenBuild("jdk_17_latest", "")
+          script {
+            properties([buildDiscarder(logRotator(artifactNumToKeepStr: '5', numToKeepStr: isDeployedBranch() ? '30' : '5'))])
+            if (isDeployedBranch()) {
+              withEnv(["JAVA_HOME=${tool "jdk_17_latest"}",
+                       "PATH+MAVEN=${ tool "jdk_17_latest" }/bin:${tool "maven_3_latest"}/bin",
+                       "MAVEN_OPTS=-Xms4G -Xmx4G -Djava.awt.headless=true"]) {
+                sh "./mvnw clean deploy -DdeployAtEnd=true -B -V"
+              }
             }
-            dir ('apache-maven/target') {
-                stash includes: 'apache-maven-bin.zip,apache-maven-wrapper-*.zip', name: 'maven-dist'
-            }
-            dir ('maven-wrapper/target') {
-                stash includes: 'maven-wrapper.jar', name: 'wrapper-dist'
-            }
+          }
         }
-
-        tests = resolveScm source: [$class: 'GitSCMSource', credentialsId: '', id: '_', remote: 'https://gitbox.apache.org/repos/asf/maven-integration-testing.git', traits: [[$class: 'jenkins.plugins.git.traits.BranchDiscoveryTrait'], [$class: 'GitToolSCMSourceTrait', gitTool: 'Default']]], targets: [BRANCH_NAME, 'master']
+      }
     }
+  }
 }
 
-Map runITsTasks = [:]
-for (String os in runITsOses) {
-    for (def jdk in runITsJdks) {
-        String osLabel = jenkinsEnv.labelForOS(os);
-        String jdkName = jenkinsEnv.jdkFromVersion(os, "${jdk}")
-        String mvnName = jenkinsEnv.mvnFromVersion(os, "${runITsMvn}")
-        echo "OS: ${os} JDK: ${jdk} => Label: ${osLabel} JDK: ${jdkName}"
-
-        String stageId = "${os}-jdk${jdk}"
-        String stageLabel = "Run ITs ${os.capitalize()} Java ${jdk}"
-        runITsTasks[stageId] = {
-            node(jenkinsEnv.nodeSelection(osLabel)) {
-                stage("${stageLabel}") {
-                    echo "NODE_NAME = ${env.NODE_NAME}"
-                    // on Windows, need a short path or we hit 256 character limit for paths
-                    // using EXECUTOR_NUMBER guarantees that concurrent builds on same agent
-                    // will not trample each other plus workaround for JENKINS-52657
-                    dir(isUnix() ? 'test' : "c:\\mvn-it-${EXECUTOR_NUMBER}.tmp") {
-                        def WORK_DIR=pwd()
-                        checkout tests
-                        if (isUnix()) {
-                            sh "rm -rvf $WORK_DIR/dists $WORK_DIR/it-local-repo"
-                        } else {
-                            bat "if exist it-local-repo rmdir /s /q it-local-repo"
-                            bat "if exist dists         rmdir /s /q dists"
-                        }
-                        dir('dists') {
-                          unstash 'maven-dist'
-                          unstash 'wrapper-dist'
-                        }
-                        try {
-                            withMaven(jdk: jdkName, maven: mvnName, mavenLocalRepo:"${WORK_DIR}/it-local-repo", options:[
-                                junitPublisher(ignoreAttachments: false)
-                            ]) {
-                                String cmd = "${runITscommand} -DmavenDistro=$WORK_DIR/dists/apache-maven-bin.zip -Dmaven.test.failure.ignore=true -DmavenWrapper=$WORK_DIR/dists/maven-wrapper.jar -DwrapperDistroDir=${WORK_DIR}/dists"
-
-                                if (isUnix()) {
-                                    sh 'df -hT'
-                                    sh "${cmd}"
-                                } else {
-                                    bat 'wmic logicaldisk get size,freespace,caption'
-                                    bat "${cmd}"
-                                }
-                            }
-                        } finally {
-                            archiveDirs(stageId, ['core-it-suite-logs':'core-it-suite/target/test-classes',
-                                                  'core-it-suite-reports':'core-it-suite/target/surefire-reports'])
-                            deleteDir() // clean up after ourselves to reduce disk space
-                        }
-                    }
-                }
-            }
-        }
-    }
+boolean isDeployedBranch() {
+  return env.BRANCH_NAME == 'master' || env.BRANCH_NAME == 'maven-4.0.x' || env.BRANCH_NAME == 'maven-3.9.x'
 }
 
-// run the parallel ITs
-parallel(runITsTasks)
-
-// JENKINS-34376 seems to make it hard to detect the aborted builds
-} catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
-    echo "[FAILURE-002] FlowInterruptedException ${e}"
-    // this ambiguous condition means a user probably aborted
-    if (e.causes.size() == 0) {
-        currentBuild.result = "ABORTED"
-    } else {
-        currentBuild.result = "FAILURE"
+/**
+ * To other developers, if you are using this method above, please use the following syntax.
+ * By default this method does NOT execute ITs anymore, just "install".
+ *
+ * mavenBuild("<jdk>", "<profiles> <goals> <plugins> <properties>"
+ *
+ * @param jdk the jdk tool name (in jenkins) to use for this build
+ * @param extraArgs extra command line args
+ */
+def mavenBuild(jdk, extraArgs) {
+  script {
+    try {
+      withEnv(["JAVA_HOME=${tool "$jdk"}",
+               "PATH+MAVEN=${tool "$jdk"}/bin:${tool "maven_3_latest"}/bin",
+               "MAVEN_OPTS=-Xms4G -Xmx4G -Djava.awt.headless=true"]) {
+        sh "mvn --errors --batch-mode --show-version org.apache.maven.plugins:maven-wrapper-plugin:3.3.4:wrapper -Dmaven=3.9.12"
+        sh "echo run Its"
+        sh "./mvnw -e -B -V install $extraArgs"
+      }
     }
-    throw e
-} catch (hudson.AbortException e) {
-    echo "[FAILURE-003] AbortException ${e}"
-    // this ambiguous condition means during a shell step, user probably aborted
-    if (e.getMessage().contains('script returned exit code 143')) {
-        currentBuild.result = "ABORTED"
-    } else {
-        currentBuild.result = "FAILURE"
+    finally {
+      junit testResults: '**/target/test-results-surefire/*.xml', allowEmptyResults: true
     }
-    throw e
-} catch (InterruptedException e) {
-    echo "[FAILURE-004] ${e}"
-    currentBuild.result = "ABORTED"
-    throw e
-} catch (Throwable e) {
-    echo "[FAILURE-001] ${e}"
-    currentBuild.result = "FAILURE"
-    throw e
-} finally {
-    // notify completion
-    stage("Notifications") {
-        jenkinsNotify()      
-    }    
-}
-
-def archiveDirs(stageId, archives) {
-    archives.each { archivePrefix, pathToContent ->
-        if (fileExists(pathToContent)) {
-            zip(zipFile: "${archivePrefix}-${stageId}.zip", dir: pathToContent, archive: true)
-        }
-    }
+  }
 }

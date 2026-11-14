@@ -1,0 +1,390 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.cling.invoker.mvnup.goals;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import eu.maveniverse.domtrip.Document;
+import eu.maveniverse.domtrip.DomTripException;
+import eu.maveniverse.domtrip.Element;
+import eu.maveniverse.domtrip.Parser;
+import eu.maveniverse.domtrip.maven.MavenPomElements;
+import org.apache.maven.api.cli.mvnup.UpgradeOptions;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.cling.invoker.mvnup.Goal;
+import org.apache.maven.cling.invoker.mvnup.UpgradeContext;
+
+import static eu.maveniverse.domtrip.maven.MavenPomElements.Files.MVN_DIRECTORY;
+import static eu.maveniverse.domtrip.maven.MavenPomElements.ModelVersions.MODEL_VERSION_4_1_0;
+
+/**
+ * Base class for upgrade goals containing shared functionality.
+ * Subclasses only differ in whether they save modifications to disk.
+ *
+ * <h2>Supported Upgrades</h2>
+ *
+ * <h3>Model Version Upgrades</h3>
+ * <ul>
+ *   <li><strong>4.0.0 → 4.1.0</strong>: Upgrades Maven 3.x POMs to Maven 4.1.0 format</li>
+ * </ul>
+ *
+ * <h3>4.0.0 → 4.1.0 Upgrade Process</h3>
+ * <ol>
+ *   <li><strong>Namespace Update</strong>: Changes namespace from Maven 4.0.0 to 4.1.0 for all elements</li>
+ *   <li><strong>Schema Location Update</strong>: Updates xsi:schemaLocation to Maven 4.1.0 XSD</li>
+ *   <li><strong>Module Conversion</strong>: Converts {@code <modules>} to {@code <subprojects>} and {@code <module>} to {@code <subproject>}</li>
+ *   <li><strong>Model Version Update</strong>: Updates {@code <modelVersion>} to 4.1.0</li>
+ * </ol>
+ *
+ * <h3>Default Behavior</h3>
+ * If no specific options are provided, the tool applies {@code --fix-model} and {@code --plugins} by default to ensure Maven 4 compatibility.
+ *
+ * <h3>All-in-One Option</h3>
+ * The {@code --all} option is a convenience flag equivalent to {@code --model 4.1.0 --infer --fix-model --plugins}.
+ * It performs a complete upgrade to Maven 4.1.0 with all optimizations, compatibility fixes, and plugin upgrades.
+ *
+ * <h3>Maven 4 Compatibility Fixes</h3>
+ * When {@code --fix-model} option is enabled (or by default), applies fixes for Maven 4 compatibility issues:
+ * <ul>
+ *   <li><strong>Unsupported combine.children Attributes</strong>: Changes 'override' to 'merge' (Maven 4 only supports 'append' and 'merge')</li>
+ *   <li><strong>Unsupported combine.self Attributes</strong>: Changes 'append' to 'merge' (Maven 4 only supports 'override', 'merge', and 'remove')</li>
+ *   <li><strong>Duplicate Dependencies</strong>: Removes duplicate dependency declarations that Maven 4 strictly validates</li>
+ *   <li><strong>Duplicate Plugins</strong>: Removes duplicate plugin declarations that Maven 4 strictly validates</li>
+ *   <li><strong>Unsupported Repository Expressions</strong>: Comments out repositories with expressions not supported by Maven 4</li>
+ *   <li><strong>Incorrect Parent Relative Paths</strong>: Fixes parent.relativePath that point to non-existent POMs by searching the project structure</li>
+ *   <li><strong>.mvn Directory Creation</strong>: Creates .mvn directory in root when not upgrading to 4.1.0 to avoid root directory warnings</li>
+ * </ul>
+ *
+ * <h3>Plugin Upgrades</h3>
+ * When {@code --plugins} option is enabled (or by default), upgrades plugins known to fail with Maven 4:
+ * <ul>
+ *   <li><strong>maven-exec-plugin</strong>: Upgrades to version 3.2.0 or higher</li>
+ *   <li><strong>maven-enforcer-plugin</strong>: Upgrades to version 3.0.0 or higher</li>
+ *   <li><strong>flatten-maven-plugin</strong>: Upgrades to version 1.2.7 or higher</li>
+ *   <li><strong>maven-shade-plugin</strong>: Upgrades to version 3.5.0 or higher</li>
+ *   <li><strong>maven-remote-resources-plugin</strong>: Upgrades to version 3.0.0 or higher</li>
+ * </ul>
+ * Plugin versions are upgraded in both {@code <build><plugins>} and {@code <build><pluginManagement><plugins>} sections.
+ * If a plugin version is defined via a property, the property value is updated instead.
+ *
+ * <h3>Inference Optimizations (Optional)</h3>
+ * When {@code --infer} option is enabled, applies inference optimizations to remove redundant information:
+ *
+ * <h4>Limited Inference for 4.0.0 Models (Maven 3.x POMs)</h4>
+ * <ul>
+ *   <li><strong>Child GroupId Removal</strong>: Removes child {@code <groupId>} when it matches parent groupId</li>
+ *   <li><strong>Child Version Removal</strong>: Removes child {@code <version>} when it matches parent version</li>
+ * </ul>
+ *
+ * <h4>Full Inference for 4.1.0+ Models</h4>
+ * <ul>
+ *   <li><strong>ModelVersion Removal</strong>: Removes {@code <modelVersion>} element (inference enabled)</li>
+ *   <li><strong>Root Attribute</strong>: Adds {@code root="true"} attribute to root project</li>
+ *   <li><strong>Parent Element Trimming</strong>:
+ *     <ul>
+ *       <li>Removes parent {@code <groupId>} when child has no explicit groupId</li>
+ *       <li>Removes parent {@code <version>} when child has no explicit version</li>
+ *       <li>Removes parent {@code <artifactId>} when it can be inferred from relativePath</li>
+ *     </ul>
+ *   </li>
+ *   <li><strong>Managed Dependencies Cleanup</strong>: Removes managed dependencies pointing to project artifacts</li>
+ *   <li><strong>Dependency Inference</strong>:
+ *     <ul>
+ *       <li>Removes dependency {@code <version>} when it points to a project artifact</li>
+ *       <li>Removes dependency {@code <groupId>} when it points to a project artifact</li>
+ *       <li>Applies to main dependencies, profile dependencies, and plugin dependencies</li>
+ *     </ul>
+ *   </li>
+ *   <li><strong>Subprojects List Removal</strong>: Removes redundant {@code <subprojects>} lists that match direct child directories</li>
+ * </ul>
+ *
+ * <h3>Multi-Module Project Support</h3>
+ * <ul>
+ *   <li><strong>POM Discovery</strong>: Recursively discovers all POM files in the project structure</li>
+ *   <li><strong>GAV Resolution</strong>: Computes GroupId, ArtifactId, Version for all project artifacts with parent inheritance</li>
+ *   <li><strong>Cross-Module Inference</strong>: Uses knowledge of all project artifacts for intelligent inference decisions</li>
+ *   <li><strong>RelativePath Resolution</strong>: Resolves parent POMs via relativePath for artifactId inference</li>
+ * </ul>
+ *
+ * <h3>Format Preservation</h3>
+ * <ul>
+ *   <li><strong>Whitespace Preservation</strong>: Maintains original formatting when removing elements</li>
+ *   <li><strong>Comment Preservation</strong>: Preserves XML comments and processing instructions</li>
+ *   <li><strong>Line Separator Handling</strong>: Uses system-appropriate line separators</li>
+ * </ul>
+ */
+public abstract class AbstractUpgradeGoal implements Goal {
+
+    private final StrategyOrchestrator orchestrator;
+
+    @Inject
+    public AbstractUpgradeGoal(StrategyOrchestrator orchestrator) {
+        this.orchestrator = orchestrator;
+    }
+
+    /**
+     * Executes the upgrade goal.
+     * Template method that calls doUpgrade and optionally saves modifications.
+     */
+    @Override
+    public int execute(UpgradeContext context) throws Exception {
+        // Keep the reporting mode derived from the goal's persistence behaviour so
+        // strategies cannot accidentally report apply-mode output during a check.
+        context.setDryRun(!shouldSaveModifications());
+        UpgradeOptions options = context.options();
+
+        // Determine target model version
+        // Default to 4.0.0 unless --all is specified or explicit --model-version is provided
+        String targetModel;
+        if (options.modelVersion().isPresent()) {
+            targetModel = options.modelVersion().get();
+        } else if (options.all().orElse(false)) {
+            targetModel = MODEL_VERSION_4_1_0;
+        } else {
+            targetModel = MavenPomElements.ModelVersions.MODEL_VERSION_4_0_0;
+        }
+
+        if (!ModelVersionUtils.isValidModelVersion(targetModel)) {
+            context.failure("Invalid target model version: " + targetModel);
+            context.failure("Supported versions: 4.0.0, 4.1.0");
+            return 1;
+        }
+
+        // Discover POMs
+        context.info("Discovering POM files...");
+        Path startingDirectory = options.directory().map(Paths::get).orElse(context.invokerRequest.cwd());
+
+        Map<Path, Document> pomMap;
+        try {
+            pomMap = PomDiscovery.discoverPoms(startingDirectory);
+        } catch (IOException | DomTripException e) {
+            context.failure("Failed to discover POM files: " + e.getMessage());
+            return 1;
+        }
+
+        if (pomMap.isEmpty()) {
+            context.warning("No POM files found in " + startingDirectory);
+            return 0;
+        }
+
+        context.info("Found " + pomMap.size() + " POM file(s)");
+
+        // Perform the upgrade logic
+        UpgradeResult result = doUpgrade(context, targetModel, pomMap);
+
+        // Save modifications if this is an apply goal and anything actually changed
+        if (shouldSaveModifications()
+                && result.success()
+                && !result.modifiedPoms().isEmpty()) {
+            saveModifications(context, pomMap, result.modifiedPoms());
+        }
+
+        return result.success() ? 0 : 1;
+    }
+
+    /**
+     * Performs the upgrade logic using the strategy pattern.
+     * Delegates to StrategyOrchestrator for coordinated strategy execution.
+     */
+    protected UpgradeResult doUpgrade(UpgradeContext context, String targetModel, Map<Path, Document> pomMap) {
+        // Execute strategies using the orchestrator
+        try {
+            UpgradeResult result = orchestrator.executeStrategies(context, pomMap);
+
+            // Create .mvn directory if needed to avoid root directory warnings
+            // This is needed for both 4.0.0 and 4.1.0 to help Maven find the project root
+            createMvnDirectoryIfNeeded(context);
+
+            // Fix incompatible extensions in .mvn/extensions.xml
+            fixIncompatibleExtensions(context);
+
+            return result;
+        } catch (Exception e) {
+            context.failure("Strategy execution failed: " + e.getMessage());
+            Set<Path> errorPoms = pomMap.keySet().isEmpty() ? Set.of(Path.of(".")) : pomMap.keySet();
+            return UpgradeResult.failure(pomMap.keySet(), errorPoms);
+        }
+    }
+
+    /**
+     * Determines whether modifications should be saved to disk.
+     * Apply goals return true, Check goals return false.
+     */
+    protected abstract boolean shouldSaveModifications();
+
+    /**
+     * Saves the modified documents to disk using domtrip's perfect formatting preservation.
+     * Unmodified POMs are left untouched and are not reported as saved.
+     */
+    protected void saveModifications(UpgradeContext context, Map<Path, Document> pomMap, Set<Path> modifiedPoms) {
+        context.info("");
+        context.info("Saving modified POMs...");
+
+        for (Map.Entry<Path, Document> entry : pomMap.entrySet()) {
+            Path pomPath = entry.getKey();
+            if (!modifiedPoms.contains(pomPath)) {
+                continue;
+            }
+            Document document = entry.getValue();
+            try {
+                // Use domtrip for perfect formatting preservation
+                String xmlContent = DomUtils.toXml(document);
+                Files.writeString(pomPath, xmlContent);
+                context.detail("Saved: " + pomPath);
+            } catch (Exception e) {
+                context.failure("Failed to save " + pomPath + ": " + e.getMessage());
+            }
+        }
+
+        context.success("All modifications saved successfully");
+    }
+
+    /**
+     * Creates .mvn directory in the root directory if it doesn't exist and the model isn't upgraded to 4.1.0.
+     * This avoids the warning about not being able to find the root directory.
+     */
+    protected void createMvnDirectoryIfNeeded(UpgradeContext context) {
+        context.info("");
+        context.info("Creating .mvn directory if needed to avoid root directory warnings...");
+
+        // Find the root directory (starting directory)
+        Path startingDirectory = context.options().directory().map(Paths::get).orElse(context.invokerRequest.cwd());
+
+        Path mvnDir = startingDirectory.resolve(MVN_DIRECTORY);
+
+        try {
+            if (!Files.exists(mvnDir)) {
+                if (shouldSaveModifications()) {
+                    Files.createDirectories(mvnDir);
+                    context.success("Created .mvn directory at " + mvnDir);
+                } else {
+                    context.action("Would create .mvn directory at " + mvnDir);
+                }
+            } else {
+                context.success(".mvn directory already exists at " + mvnDir);
+            }
+        } catch (Exception e) {
+            context.failure("Failed to create .mvn directory: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Fixes incompatible extensions in .mvn/extensions.xml for Maven 4 compatibility.
+     *
+     * <ul>
+     *   <li><strong>os-maven-plugin</strong>: Replaced with Maveniverse Nisse extension
+     *       (compatible with both Maven 3 and 4). Also adds {@code -Dnisse.compat.osDetector}
+     *       to {@code .mvn/maven.config} for drop-in compatibility.</li>
+     *   <li><strong>Develocity/Gradle Enterprise extension</strong>: Removed because it depends
+     *       on {@code org.slf4j.impl.SimpleLogger} which is not available in Maven 4.</li>
+     * </ul>
+     */
+    protected void fixIncompatibleExtensions(UpgradeContext context) {
+        Path startingDirectory = context.options().directory().map(Paths::get).orElse(context.invokerRequest.cwd());
+        Path extensionsXml = startingDirectory.resolve(MVN_DIRECTORY).resolve("extensions.xml");
+
+        if (!Files.exists(extensionsXml)) {
+            return;
+        }
+
+        context.info("");
+        context.info("Checking .mvn/extensions.xml for Maven 4 incompatible extensions...");
+        context.indent();
+
+        try {
+            String content = Files.readString(extensionsXml);
+            Document doc = new Parser().parse(content);
+            Element root = doc.root();
+            boolean modified = false;
+            boolean needsNisseCompat = false;
+
+            List<Element> extensions = root.childElements("extension").toList();
+            List<Element> toRemove = new ArrayList<>();
+
+            for (Element ext : extensions) {
+                String groupId = ext.childTextTrimmed("groupId");
+                String artifactId = ext.childTextTrimmed("artifactId");
+
+                if ("kr.motd.maven".equals(groupId) && "os-maven-plugin".equals(artifactId)) {
+                    DomUtils.updateOrCreateChildElement(ext, "groupId", "eu.maveniverse.maven.nisse");
+                    DomUtils.updateOrCreateChildElement(ext, "artifactId", "extension");
+                    DomUtils.updateOrCreateChildElement(ext, "version", "0.4.4");
+                    context.detail(
+                            "Replaced kr.motd.maven:os-maven-plugin with eu.maveniverse.maven.nisse:extension:0.4.4");
+                    modified = true;
+                    needsNisseCompat = true;
+                } else if ("com.gradle".equals(groupId)
+                        && ("develocity-maven-extension".equals(artifactId)
+                                || "gradle-enterprise-maven-extension".equals(artifactId))) {
+                    toRemove.add(ext);
+                    context.detail("Removed incompatible extension: " + groupId + ":" + artifactId);
+                    modified = true;
+                }
+            }
+
+            for (Element ext : toRemove) {
+                DomUtils.removeElement(ext);
+            }
+
+            if (modified) {
+                if (shouldSaveModifications()) {
+                    String modifiedXml = DomUtils.toXml(doc);
+                    Files.writeString(extensionsXml, modifiedXml);
+                    context.success("Updated .mvn/extensions.xml");
+
+                    if (needsNisseCompat) {
+                        addNisseCompatFlag(startingDirectory, context);
+                    }
+                } else {
+                    context.action("Would update .mvn/extensions.xml");
+                    if (needsNisseCompat) {
+                        context.action("Would add -Dnisse.compat.osDetector to .mvn/maven.config");
+                    }
+                }
+            } else {
+                context.success("No incompatible extensions found");
+            }
+        } catch (Exception e) {
+            context.failure("Failed to process .mvn/extensions.xml: " + e.getMessage());
+        } finally {
+            context.unindent();
+        }
+    }
+
+    private void addNisseCompatFlag(Path startingDirectory, UpgradeContext context) {
+        Path mavenConfig = startingDirectory.resolve(MVN_DIRECTORY).resolve("maven.config");
+        try {
+            String configContent = Files.exists(mavenConfig) ? Files.readString(mavenConfig) : "";
+            if (!configContent.contains("-Dnisse.compat.osDetector")) {
+                String separator = configContent.isEmpty() || configContent.endsWith("\n") ? "" : "\n";
+                Files.writeString(mavenConfig, configContent + separator + "-Dnisse.compat.osDetector\n");
+                context.success("Added -Dnisse.compat.osDetector to .mvn/maven.config");
+            }
+        } catch (IOException e) {
+            context.failure("Failed to update .mvn/maven.config: " + e.getMessage());
+        }
+    }
+}

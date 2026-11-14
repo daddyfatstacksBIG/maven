@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.apache.maven.its.it0121</groupId>
+  <artifactId>A</artifactId>
+  <version>1.0</version>
+  <packaging>jar</packaging>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.maven.its.it0121</groupId>
+      <artifactId>B</artifactId>
+      <version>1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <version>5.14.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

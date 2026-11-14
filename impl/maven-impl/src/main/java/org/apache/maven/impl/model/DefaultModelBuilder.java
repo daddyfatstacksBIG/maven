@@ -1,0 +1,3528 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.impl.model;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.maven.api.Constants;
+import org.apache.maven.api.RemoteRepository;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.SessionData;
+import org.apache.maven.api.Type;
+import org.apache.maven.api.VersionRange;
+import org.apache.maven.api.annotations.Nonnull;
+import org.apache.maven.api.annotations.Nullable;
+import org.apache.maven.api.cache.CacheMetadata;
+import org.apache.maven.api.cache.CacheRetention;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.di.Named;
+import org.apache.maven.api.di.Singleton;
+import org.apache.maven.api.feature.Features;
+import org.apache.maven.api.model.Activation;
+import org.apache.maven.api.model.Dependency;
+import org.apache.maven.api.model.DependencyManagement;
+import org.apache.maven.api.model.DeploymentRepository;
+import org.apache.maven.api.model.DistributionManagement;
+import org.apache.maven.api.model.Exclusion;
+import org.apache.maven.api.model.InputLocation;
+import org.apache.maven.api.model.Mixin;
+import org.apache.maven.api.model.Model;
+import org.apache.maven.api.model.Parent;
+import org.apache.maven.api.model.Profile;
+import org.apache.maven.api.model.Repository;
+import org.apache.maven.api.services.BuilderProblem;
+import org.apache.maven.api.services.BuilderProblem.Severity;
+import org.apache.maven.api.services.Interpolator;
+import org.apache.maven.api.services.MavenException;
+import org.apache.maven.api.services.ModelBuilder;
+import org.apache.maven.api.services.ModelBuilderException;
+import org.apache.maven.api.services.ModelBuilderRequest;
+import org.apache.maven.api.services.ModelBuilderResult;
+import org.apache.maven.api.services.ModelProblem;
+import org.apache.maven.api.services.ModelProblem.Version;
+import org.apache.maven.api.services.ModelProblemCollector;
+import org.apache.maven.api.services.ModelSource;
+import org.apache.maven.api.services.ProblemCollector;
+import org.apache.maven.api.services.RepositoryFactory;
+import org.apache.maven.api.services.Request;
+import org.apache.maven.api.services.RequestTrace;
+import org.apache.maven.api.services.Result;
+import org.apache.maven.api.services.Source;
+import org.apache.maven.api.services.Sources;
+import org.apache.maven.api.services.SuperPomProvider;
+import org.apache.maven.api.services.VersionParserException;
+import org.apache.maven.api.services.model.DependencyManagementImporter;
+import org.apache.maven.api.services.model.DependencyManagementInjector;
+import org.apache.maven.api.services.model.InheritanceAssembler;
+import org.apache.maven.api.services.model.ModelInterpolator;
+import org.apache.maven.api.services.model.ModelNormalizer;
+import org.apache.maven.api.services.model.ModelPathTranslator;
+import org.apache.maven.api.services.model.ModelProcessor;
+import org.apache.maven.api.services.model.ModelResolver;
+import org.apache.maven.api.services.model.ModelResolverException;
+import org.apache.maven.api.services.model.ModelUrlNormalizer;
+import org.apache.maven.api.services.model.ModelValidator;
+import org.apache.maven.api.services.model.ModelVersionParser;
+import org.apache.maven.api.services.model.PluginConfigurationExpander;
+import org.apache.maven.api.services.model.PluginManagementInjector;
+import org.apache.maven.api.services.model.ProfileActivationContext;
+import org.apache.maven.api.services.model.ProfileInjector;
+import org.apache.maven.api.services.model.ProfileSelector;
+import org.apache.maven.api.services.model.RootLocator;
+import org.apache.maven.api.services.xml.XmlReaderException;
+import org.apache.maven.api.spi.ModelParser;
+import org.apache.maven.api.spi.ModelParserException;
+import org.apache.maven.api.spi.ModelTransformer;
+import org.apache.maven.impl.DefaultRemoteRepository;
+import org.apache.maven.impl.InternalSession;
+import org.apache.maven.impl.RequestTraceHelper;
+import org.apache.maven.impl.cache.Cache;
+import org.apache.maven.impl.util.PhasingExecutor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The model builder is responsible for building the {@link Model} from the POM file.
+ * There are two ways to main use cases: the first one is to build the model from a POM file
+ * on the file system in order to actually build the project. The second one is to build the
+ * model for a dependency  or an external parent.
+ */
+@Named
+@Singleton
+public class DefaultModelBuilder implements ModelBuilder {
+
+    public static final String NAMESPACE_PREFIX = "http://maven.apache.org/POM/";
+    private static final String RAW = "raw";
+    private static final String FILE = "file";
+    private static final String IMPORT = "import";
+    private static final String PARENT = "parent";
+    private static final String PARENT_EXTERNAL = "parent-external";
+    private static final String MODEL = "model";
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    private final ModelProcessor modelProcessor;
+    private final ModelValidator modelValidator;
+    private final ModelNormalizer modelNormalizer;
+    private final ModelInterpolator modelInterpolator;
+    private final ModelPathTranslator modelPathTranslator;
+    private final ModelUrlNormalizer modelUrlNormalizer;
+    private final SuperPomProvider superPomProvider;
+    private final InheritanceAssembler inheritanceAssembler;
+    private final ProfileSelector profileSelector;
+    private final ProfileInjector profileInjector;
+    private final PluginManagementInjector pluginManagementInjector;
+    private final DependencyManagementInjector dependencyManagementInjector;
+    private final DependencyManagementImporter dependencyManagementImporter;
+    private final PluginConfigurationExpander pluginConfigurationExpander;
+    private final ModelVersionParser versionParser;
+    private final List<ModelTransformer> transformers;
+    private final ModelResolver modelResolver;
+    private final Interpolator interpolator;
+    private final RootLocator rootLocator;
+
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    @Inject
+    public DefaultModelBuilder(
+            ModelProcessor modelProcessor,
+            ModelValidator modelValidator,
+            ModelNormalizer modelNormalizer,
+            ModelInterpolator modelInterpolator,
+            ModelPathTranslator modelPathTranslator,
+            ModelUrlNormalizer modelUrlNormalizer,
+            SuperPomProvider superPomProvider,
+            InheritanceAssembler inheritanceAssembler,
+            ProfileSelector profileSelector,
+            ProfileInjector profileInjector,
+            PluginManagementInjector pluginManagementInjector,
+            DependencyManagementInjector dependencyManagementInjector,
+            DependencyManagementImporter dependencyManagementImporter,
+            PluginConfigurationExpander pluginConfigurationExpander,
+            ModelVersionParser versionParser,
+            @Nullable List<ModelTransformer> transformers,
+            ModelResolver modelResolver,
+            Interpolator interpolator,
+            RootLocator rootLocator) {
+        this.modelProcessor = modelProcessor;
+        this.modelValidator = modelValidator;
+        this.modelNormalizer = modelNormalizer;
+        this.modelInterpolator = modelInterpolator;
+        this.modelPathTranslator = modelPathTranslator;
+        this.modelUrlNormalizer = modelUrlNormalizer;
+        this.superPomProvider = superPomProvider;
+        this.inheritanceAssembler = inheritanceAssembler;
+        this.profileSelector = profileSelector;
+        this.profileInjector = profileInjector;
+        this.pluginManagementInjector = pluginManagementInjector;
+        this.dependencyManagementInjector = dependencyManagementInjector;
+        this.dependencyManagementImporter = dependencyManagementImporter;
+        this.pluginConfigurationExpander = pluginConfigurationExpander;
+        this.versionParser = versionParser;
+        this.transformers = transformers != null ? transformers : List.of();
+        this.modelResolver = modelResolver;
+        this.interpolator = interpolator;
+        this.rootLocator = rootLocator;
+    }
+
+    @Override
+    public ModelBuilderSession newSession() {
+        return new ModelBuilderSessionImpl();
+    }
+
+    protected class ModelBuilderSessionImpl implements ModelBuilderSession {
+        ModelBuilderSessionState mainSession;
+
+        /**
+         * Builds a model based on the provided ModelBuilderRequest.
+         *
+         * @param request The request containing the parameters for building the model.
+         * @return The result of the model building process.
+         * @throws ModelBuilderException If an error occurs during model building.
+         */
+        @Override
+        public ModelBuilderResult build(ModelBuilderRequest request) throws ModelBuilderException {
+            RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(request.getSession(), request);
+            try {
+                return InternalSession.from(request.getSession()).request(request, this::doBuild);
+            } finally {
+                // Clear operation results while retaining internal model cache entries.
+                // Project builds can enclose many resolver operations.
+                if (request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT) {
+                    try {
+                        clearRequestScopedCache(request);
+                    } catch (Exception e) {
+                        // Log but don't fail the build due to cache cleanup issues
+                        logger.debug("Failed to clear REQUEST_SCOPED cache for request: {}", request, e);
+                    }
+                }
+                RequestTraceHelper.exit(trace);
+            }
+        }
+
+        private ModelBuilderResult doBuild(ModelBuilderRequest request) throws ModelBuilderException {
+            ModelBuilderSessionState session = sessionFor(request);
+            if (request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT) {
+                session.buildBuildPom();
+            } else {
+                session.buildEffectiveModel(new LinkedHashSet<>());
+            }
+            return session.result;
+        }
+
+        /**
+         * Stops after the raw model, so no inheritance, interpolation or profile injection
+         * happens: only the source, the file model, the raw model and the problems are populated
+         * on the result. Reaches no repository. The checks run at strict level for any build
+         * request type; {@code BUILD_PROJECT} additionally looks for a parent beside the POM.
+         */
+        @Override
+        public ModelBuilderResult validate(ModelBuilderRequest request) throws ModelBuilderException {
+            RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(request.getSession(), request);
+            try {
+                ModelOperationRequest operation =
+                        new ModelOperationRequest(request, ModelOperation.VALIDATE, trace.mvnTrace());
+                return InternalSession.from(request.getSession()).request(operation, this::doValidate).response;
+            } finally {
+                RequestTraceHelper.exit(trace);
+            }
+        }
+
+        private SourceResponse<ModelOperationRequest, ModelBuilderResult> doValidate(ModelOperationRequest operation) {
+            ModelBuilderSessionState session = sessionFor(operation.modelRequest());
+            // Map the reactor first: a 4.1.0 subproject may leave out its parent version,
+            // taken from the parent's own file model, so without this a valid subproject
+            // fails with "'parent.version' is missing". A POM outside any project still reads.
+            session.loadReactor(false, false);
+            session.readRawModel();
+            return new SourceResponse<>(operation, session.result);
+        }
+
+        /** Creates the session on the first request, then derives one with its own result. */
+        private ModelBuilderSessionState sessionFor(ModelBuilderRequest request) {
+            if (mainSession == null) {
+                mainSession = new ModelBuilderSessionState(request);
+                return mainSession;
+            }
+            return mainSession.deriveTopLevel(
+                    request, new DefaultModelBuilderResult(request, ProblemCollector.create(mainSession.session)));
+        }
+    }
+
+    protected class ModelBuilderSessionState implements ModelProblemCollector {
+        final Session session;
+        final ModelBuilderRequest request;
+        final DefaultModelBuilderResult result;
+        final Graph dag;
+        final Map<GAKey, Set<ModelSource>> mappedSources;
+        final Set<ImportWarningKey> reportedImportWarnings;
+        final Map<String, ProblemCollector<ModelProblem>> reactorProblemCollectors;
+
+        /** See {@link #loadReactor(boolean, boolean)}. */
+        private boolean reportReactorLoadFailures = true;
+
+        String source;
+        Model sourceModel;
+        Model rootModel;
+
+        List<RemoteRepository> pomRepositories;
+        List<RemoteRepository> externalRepositories;
+        List<RemoteRepository> repositories;
+
+        List<RemoteRepository> getRepositories() {
+            return repositories;
+        }
+
+        List<RemoteRepository> getExternalRepositories() {
+            return externalRepositories;
+        }
+
+        // Cycle detection chain shared across all derived sessions
+        // Contains both GAV coordinates (groupId:artifactId:version) and file paths
+        final Set<String> parentChain;
+
+        // Sticky across derive(): true for a session that is itself resolving a dependency
+        // (ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY), or that was derived, directly
+        // or transitively, from such a session -- for instance a dependency's own parent POM.
+        // Kept separate from request.getRequestType() because a parent lookup always derives a
+        // CONSUMER_PARENT request regardless of what kind of session triggered it, which would
+        // otherwise lose the distinction this flag preserves.
+        final boolean externalOrigin;
+
+        ModelBuilderSessionState(ModelBuilderRequest request) {
+            this(
+                    request.getSession(),
+                    request,
+                    new DefaultModelBuilderResult(request, ProblemCollector.create(request.getSession())),
+                    new Graph(),
+                    new ConcurrentHashMap<>(64),
+                    ConcurrentHashMap.newKeySet(),
+                    new ConcurrentHashMap<>(),
+                    List.of(),
+                    repos(request),
+                    repos(request),
+                    new LinkedHashSet<>(),
+                    isExternalOrigin(request));
+        }
+
+        static List<RemoteRepository> repos(ModelBuilderRequest request) {
+            List<RemoteRepository> repos = request.getRepositories() != null
+                    ? request.getRepositories()
+                    : request.getSession().getRemoteRepositories();
+            return mergeRepositoriesById(repos);
+        }
+
+        /**
+         * Merges repositories that share the same ID by combining their policies.
+         * This handles the case where mirror injection produces multiple repository
+         * entries with the same mirror ID but different snapshot/release policies
+         * (e.g., when both "central" and a profile-defined repo are mirrored to the
+         * same mirror, producing two entries with the mirror's ID but different policies).
+         * Without this merge, policy deduplication in the resolver can drop the snapshot
+         * policy, causing SNAPSHOT parent resolution to fail (MNG-12769).
+         */
+        private static List<RemoteRepository> mergeRepositoriesById(List<RemoteRepository> repos) {
+            if (repos.size() <= 1) {
+                return List.copyOf(repos);
+            }
+            LinkedHashMap<String, RemoteRepository> byId = new LinkedHashMap<>();
+            boolean hasDuplicates = false;
+            for (RemoteRepository repo : repos) {
+                RemoteRepository existing = byId.putIfAbsent(repo.id(), repo);
+                if (existing != null) {
+                    hasDuplicates = true;
+                    byId.put(repo.id(), mergeRepositoryPolicies(existing, repo));
+                }
+            }
+            return hasDuplicates ? List.copyOf(byId.values()) : List.copyOf(repos);
+        }
+
+        /**
+         * Merges two repositories with the same ID by combining their policies.
+         * For each policy type (release/snapshot), the result is enabled if either
+         * input has it enabled. URL, proxy, authentication, and other properties
+         * are preserved from the dominant (first) repository.
+         */
+        private static RemoteRepository mergeRepositoryPolicies(RemoteRepository dominant, RemoteRepository recessive) {
+            if (dominant instanceof DefaultRemoteRepository d && recessive instanceof DefaultRemoteRepository r) {
+                org.eclipse.aether.repository.RemoteRepository dr = d.getRepository();
+                org.eclipse.aether.repository.RemoteRepository rr = r.getRepository();
+
+                boolean mergeSnapshots =
+                        rr.getPolicy(true).isEnabled() && !dr.getPolicy(true).isEnabled();
+                boolean mergeReleases =
+                        rr.getPolicy(false).isEnabled() && !dr.getPolicy(false).isEnabled();
+
+                if (mergeSnapshots || mergeReleases) {
+                    org.eclipse.aether.repository.RemoteRepository.Builder builder =
+                            new org.eclipse.aether.repository.RemoteRepository.Builder(dr);
+                    if (mergeSnapshots) {
+                        builder.setSnapshotPolicy(rr.getPolicy(true));
+                    }
+                    if (mergeReleases) {
+                        builder.setReleasePolicy(rr.getPolicy(false));
+                    }
+                    return new DefaultRemoteRepository(builder.build());
+                }
+            }
+            return dominant;
+        }
+
+        @SuppressWarnings("checkstyle:ParameterNumber")
+        private ModelBuilderSessionState(
+                Session session,
+                ModelBuilderRequest request,
+                DefaultModelBuilderResult result,
+                Graph dag,
+                Map<GAKey, Set<ModelSource>> mappedSources,
+                Set<ImportWarningKey> reportedImportWarnings,
+                Map<String, ProblemCollector<ModelProblem>> reactorProblemCollectors,
+                List<RemoteRepository> pomRepositories,
+                List<RemoteRepository> externalRepositories,
+                List<RemoteRepository> repositories,
+                Set<String> parentChain,
+                boolean externalOrigin) {
+            this.session = session;
+            this.request = request;
+            this.result = result;
+            this.dag = dag;
+            this.mappedSources = mappedSources;
+            this.reportedImportWarnings = reportedImportWarnings;
+            this.reactorProblemCollectors = reactorProblemCollectors;
+            this.pomRepositories = pomRepositories;
+            this.externalRepositories = externalRepositories;
+            this.repositories = repositories;
+            this.parentChain = parentChain;
+            this.externalOrigin = externalOrigin;
+            this.result.setSource(this.request.getSource());
+        }
+
+        ModelBuilderSessionState derive(ModelSource source) {
+            return derive(source, new DefaultModelBuilderResult(request, ProblemCollector.create(session)));
+        }
+
+        ModelBuilderSessionState derive(ModelSource source, DefaultModelBuilderResult result) {
+            return derive(ModelBuilderRequest.build(request, source), result);
+        }
+
+        /**
+         * Creates a new session, sharing cached datas and propagating errors.
+         */
+        ModelBuilderSessionState derive(ModelBuilderRequest request) {
+            return derive(request, new DefaultModelBuilderResult(request, ProblemCollector.create(session)));
+        }
+
+        ModelBuilderSessionState derive(ModelBuilderRequest request, DefaultModelBuilderResult result) {
+            return derive(request, result, reportedImportWarnings, reactorProblemCollectors);
+        }
+
+        ModelBuilderSessionState deriveTopLevel(ModelBuilderRequest request, DefaultModelBuilderResult result) {
+            return derive(request, result, ConcurrentHashMap.newKeySet(), new ConcurrentHashMap<>());
+        }
+
+        private ModelBuilderSessionState derive(
+                ModelBuilderRequest request,
+                DefaultModelBuilderResult result,
+                Set<ImportWarningKey> reportedImportWarnings,
+                Map<String, ProblemCollector<ModelProblem>> reactorProblemCollectors) {
+            if (session != request.getSession()) {
+                throw new IllegalArgumentException("Session mismatch");
+            }
+            // Create a new parentChain for each derived session to prevent cycle detection issues
+            // The parentChain now contains both GAV coordinates and file paths
+            // For BUILD_CONSUMER requests, use the request's explicit repositories so that
+            // BOM imports can be resolved from non-central repos (e.g., settings.xml profiles).
+            // This is scoped to BUILD_CONSUMER to avoid unintended side effects on other
+            // derived sessions (e.g., parent POM resolution during project builds).
+            List<RemoteRepository> derivedExtRepos = externalRepositories;
+            List<RemoteRepository> derivedRepos = repositories;
+            if (request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_CONSUMER
+                    && request.getRepositories() != null
+                    && !request.getRepositories().isEmpty()) {
+                derivedExtRepos = List.copyOf(request.getRepositories());
+                if (pomRepositories.isEmpty()) {
+                    derivedRepos = derivedExtRepos;
+                } else {
+                    RepositoryFactory repositoryFactory = session.getService(RepositoryFactory.class);
+                    derivedRepos = repositoryFactory.aggregate(session, pomRepositories, derivedExtRepos, false);
+                }
+            }
+            boolean derivedExternalOrigin = externalOrigin || isExternalOrigin(request);
+            ModelBuilderSessionState derived = new ModelBuilderSessionState(
+                    session,
+                    request,
+                    result,
+                    dag,
+                    mappedSources,
+                    reportedImportWarnings,
+                    reactorProblemCollectors,
+                    pomRepositories,
+                    derivedExtRepos,
+                    derivedRepos,
+                    new LinkedHashSet<>(),
+                    derivedExternalOrigin);
+            // Carried over so the reactor walk keeps its reporting mode whichever state runs it.
+            derived.reportReactorLoadFailures = reportReactorLoadFailures;
+            return derived;
+        }
+
+        @Override
+        public String toString() {
+            return "ModelBuilderSession[" + "session="
+                    + session + ", " + "request="
+                    + request + ", " + "result="
+                    + result + ']';
+        }
+
+        PhasingExecutor createExecutor() {
+            return new PhasingExecutor(Executors.newFixedThreadPool(getParallelism()));
+        }
+
+        private int getParallelism() {
+            int parallelism = Runtime.getRuntime().availableProcessors() / 2 + 1;
+            try {
+                String str = request.getUserProperties().get(Constants.MAVEN_MODEL_BUILDER_PARALLELISM);
+                if (str != null) {
+                    parallelism = Integer.parseInt(str);
+                }
+            } catch (Exception e) {
+                // ignore
+            }
+            return Math.max(1, Math.min(parallelism, Runtime.getRuntime().availableProcessors()));
+        }
+
+        public Model getRawModel(Path from, String groupId, String artifactId) {
+            ModelSource source = getSource(groupId, artifactId);
+            if (source != null) {
+                if (addEdge(from, source.getPath())) {
+                    return null;
+                }
+                try {
+                    return derive(source).readRawModel();
+                } catch (ModelBuilderException e) {
+                    // gathered with problem collector
+                }
+            }
+            return null;
+        }
+
+        public Model getRawModel(Path from, Path path) {
+            if (!Files.isRegularFile(path)) {
+                throw new IllegalArgumentException("Not a regular file: " + path);
+            }
+            if (addEdge(from, path)) {
+                return null;
+            }
+            try {
+                return derive(Sources.buildSource(path)).readRawModel();
+            } catch (ModelBuilderException e) {
+                // gathered with problem collector
+            }
+            return null;
+        }
+
+        /**
+         * Returns false if the edge was added, true if it caused a cycle.
+         */
+        private boolean addEdge(Path from, Path p) {
+            try {
+                dag.addEdge(from.toString(), p.toString());
+                return false;
+            } catch (Graph.CycleDetectedException e) {
+                add(Severity.FATAL, Version.BASE, "Cycle detected between models at " + from + " and " + p, null, e);
+                return true;
+            }
+        }
+
+        public ModelSource getSource(String groupId, String artifactId) {
+            Set<ModelSource> sources = mappedSources.get(new GAKey(groupId, artifactId));
+            if (sources != null) {
+                return sources.stream()
+                        .reduce((a, b) -> {
+                            throw new IllegalStateException(String.format(
+                                    "No unique Source for %s:%s: %s and %s",
+                                    groupId, artifactId, a.getLocation(), b.getLocation()));
+                        })
+                        .orElse(null);
+            }
+            return null;
+        }
+
+        public void putSource(String groupId, String artifactId, ModelSource source) {
+            mappedSources
+                    .computeIfAbsent(new GAKey(groupId, artifactId), k -> ConcurrentHashMap.newKeySet())
+                    .add(source);
+            // Also  register the source under the null groupId
+            if (groupId != null) {
+                putSource(null, artifactId, source);
+            }
+        }
+
+        @Override
+        public ProblemCollector<ModelProblem> getProblemCollector() {
+            return result.getProblemCollector();
+        }
+
+        @Override
+        public void setSource(String source) {
+            this.source = source;
+            this.sourceModel = null;
+        }
+
+        @Override
+        public void setSource(Model source) {
+            this.sourceModel = source;
+            this.source = null;
+
+            if (rootModel == null) {
+                rootModel = source;
+            }
+        }
+
+        @Override
+        public String getSource() {
+            if (source == null && sourceModel != null) {
+                source = ModelProblemUtils.toPath(sourceModel);
+            }
+            return source;
+        }
+
+        private String getModelId() {
+            return ModelProblemUtils.toId(sourceModel);
+        }
+
+        @Override
+        public void setRootModel(Model rootModel) {
+            this.rootModel = rootModel;
+        }
+
+        @Override
+        public Model getRootModel() {
+            return rootModel;
+        }
+
+        @Override
+        public void add(
+                BuilderProblem.Severity severity,
+                ModelProblem.Version version,
+                String message,
+                InputLocation location,
+                Exception exception) {
+            int line = -1;
+            int column = -1;
+            String source = null;
+            String modelId = null;
+
+            if (location != null) {
+                line = location.getLineNumber();
+                column = location.getColumnNumber();
+                if (location.getSource() != null) {
+                    modelId = location.getSource().getModelId();
+                    source = location.getSource().getLocation();
+                }
+            }
+
+            if (modelId == null) {
+                modelId = getModelId();
+                source = getSource();
+            }
+
+            if (line <= 0 && column <= 0) {
+                if (exception instanceof ModelParserException e) {
+                    line = e.getLineNumber();
+                    column = e.getColumnNumber();
+                } else if (exception instanceof XmlReaderException e && e.getLocation() != null) {
+                    line = e.getLocation().getLineNumber();
+                    column = e.getLocation().getColumnNumber();
+                }
+            }
+
+            ModelProblem problem =
+                    new DefaultModelProblem(message, severity, version, source, line, column, modelId, exception);
+
+            add(problem);
+        }
+
+        @Override
+        public ModelBuilderException newModelBuilderException() {
+            return new ModelBuilderException(result);
+        }
+
+        public void mergeRepositories(Model model, boolean replace) {
+            if (model.getRepositories().isEmpty()
+                    || InternalSession.from(session).getSession().isIgnoreArtifactDescriptorRepositories()) {
+                return;
+            }
+            // We need to interpolate the repositories before we can use them
+            Model interpolatedModel = interpolateModel(
+                    Model.newBuilder()
+                            .pomFile(model.getPomFile())
+                            .properties(model.getProperties())
+                            .repositories(model.getRepositories())
+                            .build(),
+                    request,
+                    this);
+            List<RemoteRepository> repos = interpolatedModel.getRepositories().stream()
+                    // filter out transitive invalid repositories
+                    // this should be safe because invalid repo coming from build POMs
+                    // have been rejected earlier during validation
+                    .filter(repo -> repo.getUrl() != null
+                            && !repo.getUrl().contains("${")
+                            && (repo.getId() == null || !repo.getId().contains("${")))
+                    .map(session::createRemoteRepository)
+                    .toList();
+            // Repositories contributed by a model resolved from a repository are merged
+            // recessively; repositories supplied by the request or session keep precedence.
+            // Note: the isBuildRequest() guard means any future non-build RequestType will
+            // also use recessive merging (the else branch). This is intentional — only a
+            // build request has a well-defined set of session/request repositories that
+            // should take precedence; dependency and parent resolution do not.
+            if (replace && isBuildRequest()) {
+                Set<String> ids = repos.stream().map(RemoteRepository::id).collect(Collectors.toSet());
+                repositories =
+                        repositories.stream().filter(r -> !ids.contains(r.id())).toList();
+                pomRepositories = pomRepositories.stream()
+                        .filter(r -> !ids.contains(r.id()))
+                        .toList();
+            } else {
+                Set<String> ids =
+                        pomRepositories.stream().map(RemoteRepository::id).collect(Collectors.toSet());
+                repos = repos.stream().filter(r -> !ids.contains(r.id())).toList();
+            }
+
+            RepositoryFactory repositoryFactory = session.getService(RepositoryFactory.class);
+            if (request.getRepositoryMerging() == ModelBuilderRequest.RepositoryMerging.REQUEST_DOMINANT) {
+                repositories = repositoryFactory.aggregate(session, repositories, repos, true);
+                pomRepositories = repositories;
+            } else {
+                pomRepositories = repositoryFactory.aggregate(session, pomRepositories, repos, true);
+                repositories = repositoryFactory.aggregate(session, pomRepositories, externalRepositories, false);
+            }
+        }
+
+        //
+        // Transform raw model to build pom.
+        // Infer missing coordinates from models in the reactor
+        //
+        Model transformFileToRaw(Model model) {
+            Parent newParent = inferParentVersion(model);
+
+            List<Dependency> newDeps = null;
+            boolean depsChanged = false;
+            if (!model.getDependencies().isEmpty()) {
+                newDeps = new ArrayList<>(model.getDependencies().size());
+                depsChanged = inferDependencies(model, model.getDependencies(), newDeps);
+            }
+
+            DependencyManagement depMgmt = model.getDependencyManagement();
+            List<Dependency> newManagedDeps = null;
+            boolean managedDepsChanged = false;
+            if (depMgmt != null && !depMgmt.getDependencies().isEmpty()) {
+                newManagedDeps = new ArrayList<>(depMgmt.getDependencies().size());
+                managedDepsChanged = inferDependencies(model, depMgmt.getDependencies(), newManagedDeps);
+            }
+
+            if (newParent == null && !depsChanged && !managedDepsChanged) {
+                return model;
+            }
+            Model.Builder builder = Model.newBuilder(model);
+            if (newParent != null) {
+                builder.parent(newParent);
+            }
+            if (depsChanged) {
+                builder.dependencies(newDeps);
+            }
+            if (managedDepsChanged) {
+                builder.dependencyManagement(depMgmt.withDependencies(newManagedDeps));
+            }
+            return builder.build();
+        }
+
+        private Parent inferParentVersion(Model model) {
+            Parent parent = model.getParent();
+            if (parent == null
+                    || parent.getVersion() != null
+                    || parent.getGroupId() == null
+                    || parent.getArtifactId() == null) {
+                return null;
+            }
+
+            Model parentModel = getRawModel(model.getPomFile(), parent.getGroupId(), parent.getArtifactId());
+            if (parentModel == null) {
+                return null;
+            }
+
+            String version = parentModel.getVersion();
+            InputLocation versionLocation = parentModel.getLocation("version");
+            if (version == null && parentModel.getParent() != null) {
+                // Parent model inherits its version from its own parent (grandparent).
+                // versionLocation may be null if the grandparent has no explicit <version>;
+                // Builder.location() silently ignores null values, which is safe here.
+                version = parentModel.getParent().getVersion();
+                versionLocation = parentModel.getParent().getLocation("version");
+            }
+            return version != null
+                    ? parent.with()
+                            .version(version)
+                            .location("version", versionLocation)
+                            .build()
+                    : null;
+        }
+
+        /**
+         * Infers the missing version or groupId of the given dependencies by looking them up in the reactor.
+         * Each dependency, either the original one or the inferred one, is added to {@code result}.
+         *
+         * @param model the model declaring the dependencies
+         * @param dependencies the dependencies to process
+         * @param result the list collecting the resulting dependencies
+         * @return whether at least one dependency has been inferred
+         */
+        private boolean inferDependencies(Model model, List<Dependency> dependencies, List<Dependency> result) {
+            boolean changed = false;
+            for (Dependency dep : dependencies) {
+                Dependency newDep = null;
+                if (dep.getVersion() == null) {
+                    newDep = inferDependencyVersion(model, dep);
+                } else if (dep.getGroupId() == null) {
+                    // Handle missing groupId when version is present
+                    newDep = inferDependencyGroupId(model, dep);
+                }
+                if (newDep != null) {
+                    changed = true;
+                }
+                result.add(newDep == null ? dep : newDep);
+            }
+            return changed;
+        }
+
+        private Dependency inferDependencyVersion(Model model, Dependency dep) {
+            Model depModel = getRawModel(model.getPomFile(), dep.getGroupId(), dep.getArtifactId());
+            if (depModel == null) {
+                return null;
+            }
+            Dependency.Builder depBuilder = Dependency.newBuilder(dep);
+            String version = depModel.getVersion();
+            InputLocation versionLocation = depModel.getLocation("version");
+            if (version == null && depModel.getParent() != null) {
+                version = depModel.getParent().getVersion();
+                versionLocation = depModel.getParent().getLocation("version");
+            }
+            depBuilder.version(version).location("version", versionLocation);
+            if (dep.getGroupId() == null) {
+                String depGroupId = depModel.getGroupId();
+                InputLocation groupIdLocation = depModel.getLocation("groupId");
+                if (depGroupId == null && depModel.getParent() != null) {
+                    depGroupId = depModel.getParent().getGroupId();
+                    groupIdLocation = depModel.getParent().getLocation("groupId");
+                }
+                depBuilder.groupId(depGroupId).location("groupId", groupIdLocation);
+            }
+            return depBuilder.build();
+        }
+
+        private Dependency inferDependencyGroupId(Model model, Dependency dep) {
+            Model depModel = getRawModel(model.getPomFile(), dep.getGroupId(), dep.getArtifactId());
+            if (depModel == null) {
+                return null;
+            }
+            Dependency.Builder depBuilder = Dependency.newBuilder(dep);
+            String depGroupId = depModel.getGroupId();
+            InputLocation groupIdLocation = depModel.getLocation("groupId");
+            if (depGroupId == null && depModel.getParent() != null) {
+                depGroupId = depModel.getParent().getGroupId();
+                groupIdLocation = depModel.getParent().getLocation("groupId");
+            }
+            depBuilder.groupId(depGroupId).location("groupId", groupIdLocation);
+            return depBuilder.build();
+        }
+
+        String replaceCiFriendlyVersion(Map<String, String> properties, String version) {
+            return version != null ? interpolator.interpolate(version, properties::get) : null;
+        }
+
+        /**
+         * Get enhanced properties that include profile-aware property resolution.
+         * This method activates profiles to ensure that properties defined in profiles
+         * are available for CI-friendly version processing and repository URL interpolation.
+         * It also includes directory-related properties that may be needed during profile activation.
+         */
+        private Map<String, String> getEnhancedProperties(Model model, Path rootDirectory, Set<Path> activeModelReads) {
+            Map<String, String> properties = new HashMap<>();
+
+            // Add directory-specific properties first, as they may be needed for profile activation
+            if (model.getProjectDirectory() != null) {
+                String basedir = model.getProjectDirectory().toString();
+                String basedirUri = model.getProjectDirectory().toUri().toString();
+                properties.put("basedir", basedir);
+                properties.put("project.basedir", basedir);
+                properties.put("project.basedir.uri", basedirUri);
+            }
+            if (rootDirectory != null) {
+                try {
+                    String root = rootDirectory.toString();
+                    String rootUri = rootDirectory.toUri().toString();
+                    properties.put("project.rootDirectory", root);
+                    properties.put("project.rootDirectory.uri", rootUri);
+                } catch (IllegalStateException e) {
+                    // Root directory not available, continue without it
+                }
+            }
+
+            // Handle root vs non-root project properties with profile activation.
+            // Use toAbsolutePath().normalize() for robust comparison — rootDirectory from
+            // session.getRootDirectory() may not be normalized, while model.getProjectDirectory()
+            // (derived from pomFile.getParent() in PathSource) is always normalized. Without
+            // consistent normalization, the root model can incorrectly enter this branch and
+            // trigger infinite recursion through readFileModel() (GH-12598).
+            Path normalizedRootDir =
+                    rootDirectory != null ? rootDirectory.toAbsolutePath().normalize() : null;
+            Path normalizedProjectDir = model.getProjectDirectory() != null
+                    ? model.getProjectDirectory().toAbsolutePath().normalize()
+                    : null;
+            if (!Objects.equals(normalizedRootDir, normalizedProjectDir)) {
+                Path rootModelPath = modelProcessor.locateExistingPom(rootDirectory);
+                if (rootModelPath != null) {
+                    // Check if the root model path is within the root directory to prevent infinite loops
+                    // This can happen when a .mvn directory exists in a subdirectory and parent inference
+                    // tries to read models above the discovered root directory.
+                    // Also skip if the root model is already being read in an outer call frame
+                    // to prevent StackOverflowError when a project has an internal parent in a
+                    // subdirectory with CI-friendly ${revision} and a .mvn/ root marker (GH-12301).
+                    // Use toAbsolutePath().normalize() for the guard check to handle paths
+                    // obtained via different representations (e.g., symlinks, relative segments).
+                    if (isParentWithinRootDirectory(rootModelPath, rootDirectory)
+                            && !activeModelReads.contains(
+                                    rootModelPath.toAbsolutePath().normalize())) {
+                        Model rootModel =
+                                derive(Sources.buildSource(rootModelPath)).readFileModel(activeModelReads);
+                        properties.putAll(getPropertiesWithProfiles(rootModel, properties));
+                    }
+                }
+            } else {
+                properties.putAll(getPropertiesWithProfiles(model, properties));
+            }
+
+            return properties;
+        }
+
+        /**
+         * Get properties from a model including properties from activated profiles.
+         * This performs lightweight profile activation to merge profile properties.
+         *
+         * @param model the model to get properties from
+         * @param baseProperties base properties (including directory properties) to include in profile activation context
+         */
+        private Map<String, String> getPropertiesWithProfiles(Model model, Map<String, String> baseProperties) {
+            Map<String, String> properties = new HashMap<>();
+
+            // Start with base properties (including directory properties)
+            properties.putAll(baseProperties);
+
+            // Add model properties
+            properties.putAll(model.getProperties());
+
+            try {
+                // Create a profile activation context for this model with base properties available
+                DefaultProfileActivationContext profileContext = getProfileActivationContext(request, model);
+
+                // Activate profiles and merge their properties
+                List<Profile> activeProfiles = getActiveProfiles(model.getProfiles(), profileContext);
+
+                for (Profile profile : activeProfiles) {
+                    properties.putAll(profile.getProperties());
+                }
+            } catch (Exception e) {
+                // If profile activation fails, log a warning but continue with base properties
+                // This ensures that CI-friendly versions still work even if profile activation has issues
+                logger.warn("Failed to activate profiles for CI-friendly version processing: {}", e.getMessage());
+                logger.debug("Profile activation failure details", e);
+            }
+
+            // System and user properties override everything (use request properties
+            // to ensure consistency with model interpolation, which also uses request properties)
+            properties.putAll(request.getSystemProperties());
+            properties.putAll(request.getUserProperties());
+
+            return properties;
+        }
+
+        /**
+         * Convenience method for getting properties with profiles without additional base properties.
+         * This is a backward compatibility method that provides an empty base properties map.
+         */
+        private Map<String, String> getPropertiesWithProfiles(Model model) {
+            return getPropertiesWithProfiles(model, new HashMap<>());
+        }
+
+        /**
+         * Loads the file models of the whole reactor from the project root, so that every model
+         * that may be needed to read another one is mapped. With {@code mandatoryRoot} false, a
+         * source outside any project is read on its own instead of failing.
+         * <p>
+         * With {@code reportLoadFailures} false, a module that cannot be loaded is logged instead
+         * of reported, so that a caller reading a single POM is not told its file is broken when
+         * a sibling is. Reading the POM it did ask about reports that one's own failure anyway.
+         */
+        private void loadReactor(boolean mandatoryRoot, boolean reportLoadFailures) {
+            this.reportReactorLoadFailures = reportLoadFailures;
+            // Retrieve and normalize the source path, ensuring it's non-null and in absolute form
+            Path top = request.getSource().getPath();
+            if (top == null) {
+                throw new IllegalStateException("Recursive build requested but source has no path");
+            }
+            top = top.toAbsolutePath().normalize();
+
+            // Obtain the root directory, resolving it if necessary
+            Path rootDirectory;
+            try {
+                rootDirectory = session.getRootDirectory();
+            } catch (IllegalStateException e) {
+                RootLocator rootLocator = session.getService(RootLocator.class);
+                rootDirectory = mandatoryRoot ? rootLocator.findMandatoryRoot(top) : rootLocator.findRoot(top);
+            }
+
+            // Locate and normalize the root POM if it exists, fallback to top otherwise
+            Path root = rootDirectory != null ? modelProcessor.locateExistingPom(rootDirectory) : null;
+            if (root != null) {
+                root = root.toAbsolutePath().normalize();
+            } else {
+                root = top;
+            }
+
+            // Load all models starting from the root
+            loadFromRoot(root, top);
+        }
+
+        private void buildBuildPom() throws ModelBuilderException {
+            loadReactor(true, true);
+
+            // Check for errors after loading models
+            if (hasErrors()) {
+                throw newModelBuilderException();
+            }
+
+            // For the top model and all its children, build the effective model.
+            // This is done through the phased executor
+            var allResults = results(result).toList();
+            List<RuntimeException> exceptions = new CopyOnWriteArrayList<>();
+            InternalSession session = InternalSession.from(this.session);
+            RequestTrace trace = session.getCurrentTrace();
+            try (PhasingExecutor executor = createExecutor()) {
+                for (DefaultModelBuilderResult r : allResults) {
+                    executor.execute(() -> {
+                        ModelBuilderSessionState mbs = derive(r.getSource(), r);
+                        session.setCurrentTrace(trace);
+                        try {
+                            mbs.buildEffectiveModel(new LinkedHashSet<>());
+                        } catch (ModelBuilderException e) {
+                            // gathered with problem collector
+                            // Propagate problems from child session to parent session
+                            for (var problem : e.getResult()
+                                    .getProblemCollector()
+                                    .problems()
+                                    .toList()) {
+                                getProblemCollector().reportProblem(problem);
+                            }
+                        } catch (RuntimeException t) {
+                            exceptions.add(t);
+                        } finally {
+                            session.setCurrentTrace(null);
+                        }
+                    });
+                }
+            }
+
+            // Check for errors again after execution
+            if (exceptions.size() == 1) {
+                throw exceptions.get(0);
+            } else if (exceptions.size() > 1) {
+                MavenException fatalException = new MavenException("Multiple fatal exceptions occurred");
+                exceptions.forEach(fatalException::addSuppressed);
+                throw fatalException;
+            } else if (hasErrors()) {
+                throw newModelBuilderException();
+            }
+        }
+
+        /**
+         * Generates a stream of DefaultModelBuilderResult objects, starting with the provided
+         * result and recursively including all its child results.
+         *
+         * @param r The initial DefaultModelBuilderResult object from which to generate the stream.
+         * @return A Stream of DefaultModelBuilderResult objects, starting with the provided result
+         *         and including all its child results.
+         */
+        Stream<DefaultModelBuilderResult> results(DefaultModelBuilderResult r) {
+            return Stream.concat(Stream.of(r), r.getChildren().stream().flatMap(this::results));
+        }
+
+        private void loadFromRoot(Path root, Path top) {
+            try (PhasingExecutor executor = createExecutor()) {
+                DefaultModelBuilderResult r = Objects.equals(top, root)
+                        ? result
+                        : new DefaultModelBuilderResult(request, ProblemCollector.create(session));
+                loadFilePom(executor, top, root, Set.of(), r);
+            }
+            if (result.getFileModel() == null && !Objects.equals(top, root)) {
+                // Only a warning when a build is what was asked for. A caller reading one POM has
+                // no reactor to get wrong, and the retry below is routine there, not a misconfiguration.
+                (reportReactorLoadFailures ? logger.atWarn() : logger.atDebug())
+                        .log(
+                                "The top project ({}) cannot be found in the reactor from root project ({}). "
+                                        + "Make sure the root directory is correct (a missing '.mvn' directory in the root "
+                                        + "project is the most common cause) and the project is correctly included "
+                                        + "in the reactor (missing activated profiles, command line options, etc.). For this "
+                                        + "build, the top project will be used as the root project.",
+                                top,
+                                root);
+                mappedSources.clear();
+                reportedImportWarnings.clear();
+                reactorProblemCollectors.clear();
+                loadFromRoot(top, top);
+            }
+        }
+
+        private void loadFilePom(
+                Executor executor, Path top, Path pom, Set<Path> parents, DefaultModelBuilderResult r) {
+            try {
+                Path pomDirectory = Files.isDirectory(pom) ? pom : pom.getParent();
+                ModelSource src = Sources.buildSource(pom);
+                Model model = derive(src, r).readFileModel();
+                // keep all loaded file models in memory, those will be needed
+                // during the raw to build transformation
+                registerReactorProblemCollector(src, r.getProblemCollector());
+                putSource(getGroupId(model), model.getArtifactId(), src);
+                Model activated = activateFileModel(model);
+                for (String subproject : getSubprojects(activated)) {
+                    if (subproject == null || subproject.isEmpty()) {
+                        continue;
+                    }
+
+                    // #12729: interpolate properties in the subproject/module path (e.g.
+                    // <module>./../module/pom${version-discriminator}.xml</module>) before
+                    // resolving it against the filesystem. Model-wide interpolation happens
+                    // later in the build, but module paths must be resolved here, so we
+                    // interpolate just the path against the user, model and system properties.
+                    subproject = interpolator.interpolate(
+                            subproject,
+                            Interpolator.chain(
+                                    request.getUserProperties()::get,
+                                    activated.getProperties()::get,
+                                    request.getSystemProperties()::get));
+
+                    subproject = subproject.replace('\\', File.separatorChar).replace('/', File.separatorChar);
+
+                    Path rawSubprojectFile = modelProcessor.locateExistingPom(pomDirectory.resolve(subproject));
+
+                    if (rawSubprojectFile == null) {
+                        ModelProblem problem = new DefaultModelProblem(
+                                "Child subproject " + subproject + " of " + pomDirectory + " does not exist",
+                                Severity.ERROR,
+                                Version.BASE,
+                                model,
+                                -1,
+                                -1,
+                                null);
+                        r.getProblemCollector().reportProblem(problem);
+                        continue;
+                    }
+
+                    Path subprojectFile = rawSubprojectFile.toAbsolutePath().normalize();
+
+                    if (parents.contains(subprojectFile)) {
+                        StringBuilder buffer = new StringBuilder(256);
+                        for (Path aggregatorFile : parents) {
+                            buffer.append(aggregatorFile).append(" -> ");
+                        }
+                        buffer.append(subprojectFile);
+
+                        ModelProblem problem = new DefaultModelProblem(
+                                "Child subproject " + subprojectFile + " of " + pom + " forms aggregation cycle "
+                                        + buffer,
+                                Severity.ERROR,
+                                Version.BASE,
+                                model,
+                                -1,
+                                -1,
+                                null);
+                        r.getProblemCollector().reportProblem(problem);
+                        continue;
+                    }
+
+                    DefaultModelBuilderResult cr = Objects.equals(top, subprojectFile)
+                            ? result
+                            : new DefaultModelBuilderResult(request, ProblemCollector.create(session));
+                    if (request.isRecursive()) {
+                        r.getChildren().add(cr);
+                    }
+
+                    InternalSession session = InternalSession.from(this.session);
+                    RequestTrace trace = session.getCurrentTrace();
+                    executor.execute(() -> {
+                        session.setCurrentTrace(trace);
+                        try {
+                            loadFilePom(executor, top, subprojectFile, concat(parents, pom), cr);
+                        } finally {
+                            session.setCurrentTrace(null);
+                        }
+                    });
+                }
+            } catch (ModelBuilderException e) {
+                // gathered with problem collector
+                if (reportReactorLoadFailures) {
+                    add(Severity.ERROR, Version.V40, "Failed to load project " + pom, e);
+                } else {
+                    // The caller asked about one POM. If that POM is the one that failed, reading
+                    // it reports the failure again in a moment, with the real reason attached.
+                    logger.debug("Failed to load project {} while mapping the reactor", pom, e);
+                }
+            }
+        }
+
+        static <T> Set<T> concat(Set<T> a, T b) {
+            Set<T> result = new HashSet<>(a);
+            result.add(b);
+            return Set.copyOf(result);
+        }
+
+        void buildEffectiveModel(Collection<String> importIds) throws ModelBuilderException {
+            Model resultModel = readEffectiveModel();
+            setSource(resultModel);
+            setRootModel(resultModel);
+
+            // model path translation
+            resultModel =
+                    modelPathTranslator.alignToBaseDirectory(resultModel, resultModel.getProjectDirectory(), request);
+
+            // plugin management injection
+            resultModel = pluginManagementInjector.injectManagement(resultModel, request, this);
+
+            // lifecycle bindings injection
+            if (request.getRequestType() != ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY) {
+                org.apache.maven.api.services.ModelTransformer lifecycleBindingsInjector =
+                        request.getLifecycleBindingsInjector();
+                if (lifecycleBindingsInjector != null) {
+                    resultModel = lifecycleBindingsInjector.transform(resultModel, request, this);
+                }
+            }
+
+            // dependency management import
+            resultModel = importDependencyManagement(resultModel, importIds);
+
+            // dependency management injection
+            resultModel = dependencyManagementInjector.injectManagement(resultModel, request, this);
+
+            resultModel = modelNormalizer.injectDefaultValues(resultModel, request, this);
+
+            if (request.getRequestType() != ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY) {
+                // plugins configuration
+                resultModel = pluginConfigurationExpander.expandPluginConfiguration(resultModel, request, this);
+            }
+
+            for (var transformer : transformers) {
+                resultModel = transformer.transformEffectiveModel(resultModel);
+            }
+
+            result.setEffectiveModel(resultModel);
+            // Set the default relative path for the parent in the file model
+            if (result.getFileModel().getParent() != null
+                    && result.getFileModel().getParent().getRelativePath() == null) {
+                result.setFileModel(result.getFileModel()
+                        .withParent(result.getFileModel()
+                                .getParent()
+                                .withRelativePath(resultModel.getParent().getRelativePath())));
+            }
+
+            // effective model validation
+            modelValidator.validateEffectiveModel(
+                    session,
+                    resultModel,
+                    isStrictRequest()
+                            ? ModelValidator.VALIDATION_LEVEL_STRICT
+                            : ModelValidator.VALIDATION_LEVEL_MINIMAL,
+                    this);
+
+            if (hasErrors()) {
+                throw newModelBuilderException();
+            }
+        }
+
+        Model readParent(
+                Model childModel,
+                Parent parent,
+                DefaultProfileActivationContext profileActivationContext,
+                Set<String> parentChain) {
+            return readParentFrames(
+                    new ParentResolutionFrame(childModel, parent, profileActivationContext, parentChain, true, false));
+        }
+
+        private Model resolveParent(
+                Model childModel,
+                Parent parent,
+                DefaultProfileActivationContext profileActivationContext,
+                Set<String> parentChain)
+                throws ModelBuilderException {
+            return readParentFrames(
+                    new ParentResolutionFrame(childModel, parent, profileActivationContext, parentChain, false, false));
+        }
+
+        private ModelSource findLocalParent(Model childModel, Parent parent) {
+            ModelSource candidateSource;
+
+            boolean isParentOrSimpleMixin = !(parent instanceof Mixin)
+                    || (((Mixin) parent).getClassifier() == null && ((Mixin) parent).getExtension() == null);
+            String parentPath = parent.getRelativePath();
+            if (request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT) {
+                if (parentPath != null && !parentPath.isEmpty()) {
+                    candidateSource = request.getSource().resolve(modelProcessor::locateExistingPom, parentPath);
+                    if (candidateSource == null) {
+                        wrongParentRelativePath(childModel);
+                        return null;
+                    }
+                } else if (isParentOrSimpleMixin) {
+                    candidateSource =
+                            resolveReactorModel(parent.getGroupId(), parent.getArtifactId(), parent.getVersion());
+                    if (candidateSource == null && parentPath == null) {
+                        candidateSource = request.getSource().resolve(modelProcessor::locateExistingPom, "..");
+                    }
+                } else {
+                    candidateSource = null;
+                }
+            } else if (isParentOrSimpleMixin) {
+                candidateSource = resolveReactorModel(parent.getGroupId(), parent.getArtifactId(), parent.getVersion());
+                if (candidateSource == null) {
+                    if (parentPath == null) {
+                        parentPath = "..";
+                    }
+                    if (!parentPath.isEmpty()) {
+                        candidateSource = request.getSource().resolve(modelProcessor::locateExistingPom, parentPath);
+                    }
+                }
+            } else {
+                candidateSource = null;
+            }
+
+            return candidateSource;
+        }
+
+        private boolean isLocalParentVersion(Model childModel, Parent parent, Model candidateModel) {
+            String version = getVersion(candidateModel);
+
+            if (version != null && parent.getVersion() != null && !version.equals(parent.getVersion())) {
+                try {
+                    VersionRange parentRange = versionParser.parseVersionRange(parent.getVersion());
+                    if (!parentRange.contains(versionParser.parseVersion(version))) {
+                        // version skew drop back to resolution from the repository
+                        return false;
+                    }
+
+                    // Validate versions aren't inherited when using parent ranges the same way as when read
+                    // externally.
+                    String rawChildModelVersion = childModel.getVersion();
+
+                    if (rawChildModelVersion == null) {
+                        // Message below is checked for in the MNG-2199 core IT.
+                        add(Severity.FATAL, Version.V31, "Version must be a constant", childModel.getLocation(""));
+
+                    } else {
+                        if (rawChildVersionReferencesParent(rawChildModelVersion)) {
+                            // Message below is checked for in the MNG-2199 core IT.
+                            add(
+                                    Severity.FATAL,
+                                    Version.V31,
+                                    "Version must be a constant",
+                                    childModel.getLocation("version"));
+                        }
+                    }
+
+                    // MNG-2199: What else to check here ?
+                } catch (VersionParserException e) {
+                    // invalid version range, so drop back to resolution from the repository
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void mismatchRelativePathAndGA(Model childModel, Parent parent, String groupId, String artifactId) {
+            boolean defaultPath = parent.getRelativePath() == null;
+            boolean maven3Mode = Features.mavenMaven3Personality(
+                    InternalSession.from(session).getSession().getConfigProperties());
+
+            String actual = groupId + ':' + artifactId;
+            String declared = parent.getGroupId() + ':' + parent.getArtifactId();
+            String sourceHint = (childModel != getRootModel()) ? ModelProblemUtils.toSourceHint(childModel) : null;
+
+            String message;
+            if (defaultPath) {
+                // <relativePath> was omitted — Maven probed ../pom.xml on its own
+                message = "Maven probed the default location '../pom.xml'"
+                        + (sourceHint != null ? " for POM " + sourceHint : "")
+                        + " and found " + actual
+                        + " instead of the declared parent " + declared
+                        + ". Maven will fall back to repository resolution."
+                        + " To suppress this warning, add <relativePath/> to your <parent> declaration.";
+            } else {
+                // <relativePath> was set explicitly — this is a configuration error
+                message = "'parent.relativePath'"
+                        + (sourceHint != null ? " of POM " + sourceHint : "")
+                        + " points at '" + parent.getRelativePath() + "'"
+                        + " which resolves to " + actual
+                        + " instead of the declared parent " + declared
+                        + (maven3Mode
+                                ? ". Please verify your project structure."
+                                : ". Correct the <relativePath> value or remove it to let Maven resolve the parent"
+                                        + " from the repository."
+                                        + " If this POM was generated by a build tool (e.g. maven-shade-plugin),"
+                                        + " upgrade that tool or use -Dmaven.maven3Personality as a temporary workaround.");
+            }
+
+            setSource(childModel);
+            // WARNING when: Maven probed the default path (user didn't set anything),
+            //               OR maven3Personality is active (preserve historical lenient behaviour).
+            // FATAL otherwise: explicit <relativePath> pointing at the wrong artifact is a config error.
+            boolean warn = defaultPath || maven3Mode;
+            add(warn ? Severity.WARNING : Severity.FATAL, Version.BASE, message, parent.getLocation(""));
+        }
+
+        private void wrongParentRelativePath(Model childModel) {
+            Parent parent = childModel.getParent();
+            String parentPath = parent.getRelativePath();
+            StringBuilder buffer = new StringBuilder(256);
+            buffer.append("'parent.relativePath'");
+            if (childModel != getRootModel()) {
+                buffer.append(" of POM ").append(ModelProblemUtils.toSourceHint(childModel));
+            }
+            buffer.append(" points at '").append(parentPath);
+            buffer.append("' but no POM could be found, please verify your project structure");
+
+            setSource(childModel);
+            add(Severity.FATAL, Version.BASE, buffer.toString(), parent.getLocation(""));
+        }
+
+        Model resolveAndReadParentExternally(
+                Model childModel,
+                Parent parent,
+                DefaultProfileActivationContext profileActivationContext,
+                Set<String> parentChain)
+                throws ModelBuilderException {
+            return readParentFrames(
+                    new ParentResolutionFrame(childModel, parent, profileActivationContext, parentChain, false, true));
+        }
+
+        private record ResolvedParentKey(
+                String groupId, String artifactId, String version, String classifier, String extension) {}
+
+        private record ExternalParent(ModelBuilderSessionState state, Parent parent, ResolvedParentKey key) {}
+
+        private ExternalParent resolveExternalParent(Model childModel, Parent parent) {
+            ModelBuilderRequest request = this.request;
+            setSource(childModel);
+
+            String groupId = parent.getGroupId();
+            String artifactId = parent.getArtifactId();
+            String version = parent.getVersion();
+            String classifier = parent instanceof Mixin ? ((Mixin) parent).getClassifier() : null;
+            String extension = parent instanceof Mixin ? ((Mixin) parent).getExtension() : null;
+
+            // add repositories specified by the current model so that we can resolve the parent
+            if (!childModel.getRepositories().isEmpty()) {
+                var previousRepositories = repositories;
+                mergeRepositories(childModel, false);
+                if (!Objects.equals(previousRepositories, repositories)) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Merging repositories from " + childModel.getId() + "\n"
+                                + repositories.stream()
+                                        .map(Object::toString)
+                                        .collect(Collectors.joining("\n", "    ", "")));
+                    }
+                }
+            }
+
+            ModelSource modelSource;
+            try {
+                modelSource = classifier == null && extension == null
+                        ? resolveReactorModel(groupId, artifactId, version)
+                        : null;
+                if (modelSource == null) {
+                    ModelResolver.ModelResolverRequest req = new ModelResolver.ModelResolverRequest(
+                            request.getSession(),
+                            null,
+                            repositories,
+                            groupId,
+                            artifactId,
+                            version,
+                            classifier,
+                            extension != null ? extension : "pom");
+                    ModelResolver.ModelResolverResult result = modelResolver.resolveModel(req);
+                    modelSource = result.source();
+                    if (result.version() != null) {
+                        parent = parent.withVersion(result.version());
+                    }
+                }
+            } catch (ModelResolverException e) {
+                // Message below is checked for in the MNG-2199 core IT.
+                StringBuilder buffer = new StringBuilder(256);
+                buffer.append("Non-resolvable parent POM");
+                if (!containsCoordinates(e.getMessage(), groupId, artifactId, version)) {
+                    buffer.append(' ').append(ModelProblemUtils.toId(groupId, artifactId, version));
+                }
+                if (childModel != getRootModel()) {
+                    buffer.append(" for ").append(ModelProblemUtils.toId(childModel));
+                }
+                buffer.append(": ").append(e.getMessage());
+                if (request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT) {
+                    buffer.append(" and parent could not be found in reactor");
+                }
+
+                add(Severity.FATAL, Version.BASE, buffer.toString(), parent.getLocation(""), e);
+                throw newModelBuilderException();
+            }
+
+            ModelBuilderRequest lenientRequest = ModelBuilderRequest.builder(request)
+                    .requestType(ModelBuilderRequest.RequestType.CONSUMER_PARENT)
+                    .source(modelSource)
+                    .build();
+
+            return new ExternalParent(
+                    derive(lenientRequest),
+                    parent,
+                    new ResolvedParentKey(
+                            groupId,
+                            artifactId,
+                            parent.getVersion(),
+                            classifier,
+                            extension != null ? extension : "pom"));
+        }
+
+        private void validateExternalParentVersion(Model childModel, Parent parent, String version) {
+            if (!parent.getVersion().equals(version)) {
+                String rawChildModelVersion = childModel.getVersion();
+
+                if (rawChildModelVersion == null) {
+                    // Message below is checked for in the MNG-2199 core IT.
+                    add(Severity.FATAL, Version.V31, "Version must be a constant", childModel.getLocation(""));
+                } else {
+                    if (rawChildVersionReferencesParent(rawChildModelVersion)) {
+                        // Message below is checked for in the MNG-2199 core IT.
+                        add(
+                                Severity.FATAL,
+                                Version.V31,
+                                "Version must be a constant",
+                                childModel.getLocation("version"));
+                    }
+                }
+
+                // MNG-2199: What else to check here ?
+            }
+        }
+
+        Model activateFileModel(Model inputModel) throws ModelBuilderException {
+            setRootModel(inputModel);
+
+            // profile activation
+            DefaultProfileActivationContext profileActivationContext = getProfileActivationContext(request, inputModel);
+
+            setSource("(external profiles)");
+            List<Profile> activeExternalProfiles = getActiveProfiles(request.getProfiles(), profileActivationContext);
+
+            result.setActiveExternalProfiles(activeExternalProfiles);
+
+            if (!activeExternalProfiles.isEmpty()) {
+                Map<String, String> profileProps = new HashMap<>();
+                for (Profile profile : activeExternalProfiles) {
+                    profileProps.putAll(profile.getProperties());
+                }
+                profileProps.putAll(request.getUserProperties());
+                profileActivationContext.setUserProperties(profileProps);
+            }
+
+            profileActivationContext.setModel(inputModel);
+            setSource(inputModel);
+            List<Profile> activePomProfiles = getActiveProfiles(inputModel.getProfiles(), profileActivationContext);
+
+            // model normalization
+            setSource(inputModel);
+            inputModel = modelNormalizer.mergeDuplicates(inputModel, request, this);
+
+            List<Activation> interpolatedActivations = getProfileActivations(inputModel);
+            inputModel = injectProfileActivations(inputModel, interpolatedActivations);
+
+            // profile injection
+            inputModel = profileInjector.injectProfiles(inputModel, activePomProfiles, request, this);
+            inputModel = profileInjector.injectProfiles(inputModel, activeExternalProfiles, request, this);
+
+            return inputModel;
+        }
+
+        @SuppressWarnings("checkstyle:methodlength")
+        private Model readEffectiveModel() throws ModelBuilderException {
+            Model inputModel = readRawModel();
+            if (hasFatalErrors()) {
+                throw newModelBuilderException();
+            }
+
+            setRootModel(inputModel);
+
+            Model activatedFileModel = activateFileModel(inputModel);
+
+            // profile activation
+            DefaultProfileActivationContext profileActivationContext =
+                    getProfileActivationContext(request, activatedFileModel);
+
+            List<Profile> activeExternalProfiles = result.getActiveExternalProfiles();
+
+            if (!activeExternalProfiles.isEmpty()) {
+                Map<String, String> profileProps = new HashMap<>();
+                for (Profile profile : activeExternalProfiles) {
+                    profileProps.putAll(profile.getProperties());
+                }
+                profileProps.putAll(request.getUserProperties());
+                profileActivationContext.setUserProperties(profileProps);
+            }
+
+            Model parentModel = readParent(
+                    activatedFileModel, activatedFileModel.getParent(), profileActivationContext, parentChain);
+
+            // Now that we have read the parent, we can set the relative
+            // path correctly if it was not set in the input model
+            if (inputModel.getParent() != null && inputModel.getParent().getRelativePath() == null) {
+                String relPath;
+                if (isBuildRequest() && parentModel.getPomFile() != null && inputModel.getPomFile() != null) {
+                    relPath = inputModel
+                            .getPomFile()
+                            .getParent()
+                            .toAbsolutePath()
+                            .relativize(
+                                    parentModel.getPomFile().toAbsolutePath().getParent())
+                            .toString();
+                } else {
+                    relPath = "..";
+                }
+                inputModel = inputModel.withParent(inputModel.getParent().withRelativePath(relPath));
+            }
+
+            Model model = inheritanceAssembler.assembleModelInheritance(inputModel, parentModel, request, this);
+
+            // Mixins
+            for (Mixin mixin : model.getMixins()) {
+                Model parent = resolveParent(model, mixin, profileActivationContext, parentChain);
+                // Merge mixin into model
+                model = inheritanceAssembler.assembleModelInheritance(model, parent, request, this);
+                // Ensure mixin properties override any previously inherited properties
+                // This is necessary because normal inheritance gives child precedence, but for mixins
+                // we want the mixin to take precedence over inherited parent properties
+                Map<String, String> mergedProperties = new java.util.HashMap<>(model.getProperties());
+                mergedProperties.putAll(parent.getProperties());
+                model = model.withProperties(mergedProperties);
+            }
+
+            // model normalization
+            model = modelNormalizer.mergeDuplicates(model, request, this);
+
+            // profile activation
+            profileActivationContext.setModel(model);
+
+            // Activate profiles from the input model (before inheritance) to get only local profiles
+            // Parent profiles are already added when the parent model is read
+            List<Profile> localActivePomProfiles =
+                    getActiveProfiles(inputModel.getProfiles(), profileActivationContext);
+
+            // profile injection - inject all profiles (local + inherited) into the model
+            List<Profile> activePomProfiles = getActiveProfiles(model.getProfiles(), profileActivationContext);
+            model = profileInjector.injectProfiles(model, activePomProfiles, request, this);
+            model = profileInjector.injectProfiles(model, activeExternalProfiles, request, this);
+
+            // Track only the local profiles for this model
+            // Use ModelProblemUtils.toId() to get groupId:artifactId:version format (without packaging)
+            addActivePomProfiles(ModelProblemUtils.toId(model), localActivePomProfiles);
+
+            // model interpolation
+            Model resultModel = model;
+            resultModel = interpolateModel(resultModel, request, this);
+
+            // model normalization
+            resultModel = modelNormalizer.mergeDuplicates(resultModel, request, this);
+
+            // url normalization
+            resultModel = modelUrlNormalizer.normalize(resultModel, request);
+
+            // Now the fully interpolated model is available: reconfigure the resolver
+            if (!resultModel.getRepositories().isEmpty()) {
+                List<String> oldRepos =
+                        repositories.stream().map(Object::toString).toList();
+                mergeRepositories(resultModel, true);
+                List<String> newRepos =
+                        repositories.stream().map(Object::toString).toList();
+                if (!Objects.equals(oldRepos, newRepos)) {
+                    logger.debug("Replacing repositories from " + resultModel.getId() + "\n"
+                            + newRepos.stream().map(s -> "    " + s).collect(Collectors.joining("\n")));
+                }
+            }
+
+            return resultModel;
+        }
+
+        private void addActivePomProfiles(String modelId, List<Profile> activePomProfiles) {
+            if (activePomProfiles != null && !activePomProfiles.isEmpty()) {
+                // Track profiles by model ID
+                result.setActivePomProfiles(modelId, activePomProfiles);
+            }
+        }
+
+        private List<Profile> getActiveProfiles(
+                Collection<Profile> interpolatedProfiles, DefaultProfileActivationContext profileActivationContext) {
+            if (isBuildRequestWithActivation()) {
+                if (externalOrigin) {
+                    // A model resolved to satisfy dependency resolution -- a dependency POM
+                    // itself, or one of its parents, reached transitively -- evaluates profiles
+                    // against a sandboxed activation context.  The sandbox:
+                    //  - preserves system properties (JDK/OS activation must work),
+                    //  - suppresses user properties (consumer -D flags must not activate
+                    //    dependency profiles — they were not set for that artifact),
+                    //  - does not expose model properties through system property lookups
+                    //    (a dependency POM's own <properties> must not activate its own
+                    //    property-based profiles — see #13390),
+                    //  - disables file existence checks (publisher paths don't exist here).
+                    // File-activated profiles are pre-filtered (not just sandboxed) because
+                    // returning false from exists() would incorrectly activate <missing> profiles.
+                    // Repository stripping is intentionally omitted: only legitimately-active
+                    // profiles (JDK/OS/activeByDefault/system-property/negated-property)
+                    // reach injection, and stripping their repositories would break the
+                    // established project → dep1 → dep2 pattern. See #13100.
+                    // #13146: same-id shadowing is already mitigated by REQUEST_DOMINANT
+                    // merging (the request's repositories take precedence), so no
+                    // additional WARN/FAIL policy is needed.
+                    // Condition profiles using exists()/missing() are also pre-filtered for the
+                    // same reason as file profiles: in the sandbox, context.exists() always returns
+                    // false, so missing(path) evaluates to !false = true and fires unconditionally.
+                    Collection<Profile> nonFileProfiles = interpolatedProfiles.stream()
+                            .filter(p -> p.getActivation() == null
+                                    || (p.getActivation().getFile() == null && !hasFileConditionExpression(p)))
+                            .toList();
+                    ProfileActivationContext externalContext =
+                            profileActivationContext.withoutUserPropertiesAndFilesystem();
+                    return profileSelector.getActiveProfiles(nonFileProfiles, externalContext, this);
+                }
+                return profileSelector.getActiveProfiles(interpolatedProfiles, profileActivationContext, this);
+            } else {
+                // BUILD_CONSUMER: activate only deterministic profiles whose activation is a
+                // function of the build platform (OS, JDK version, activeByDefault) rather than
+                // of environment-specific state (file existence, property values, condition
+                // expressions).  This ensures that platform-dependent properties (e.g.
+                // ${swt.artifactId} from an OS-activated profile) are resolved before the
+                // coordinate validator runs, while keeping the consumer POM reproducible across
+                // environments.  Repositories from these profiles are stripped — they must not
+                // leak into the published consumer POM.
+                // Packaging-activated profiles are also excluded: the consumer POM builder
+                // handles them separately via inlinePackagingActivatedProfiles().
+                // See GH-13004.
+                Collection<Profile> deterministicProfiles = interpolatedProfiles.stream()
+                        .filter(profile ->
+                                !hasFileOrPropertyOrConditionActivation(profile) && !hasPackagingActivation(profile))
+                        .map(profile -> profile.withRepositories(List.of()).withPluginRepositories(List.of()))
+                        .toList();
+                return profileSelector.getActiveProfiles(deterministicProfiles, profileActivationContext, this);
+            }
+        }
+
+        /**
+         * Determines whether the given profile's activation depends on file existence, a
+         * property, or a condition expression, as opposed to being a function of the build
+         * platform (JDK version, operating system) or {@code activeByDefault}.
+         * <p>
+         * Used for BUILD_CONSUMER model building to keep the consumer POM deterministic.
+         * For external (dependency/parent/BOM) models, the sandbox context approach is used
+         * instead — see {@link DefaultProfileActivationContext#withoutUserPropertiesAndFilesystem()}.
+         */
+        private static boolean hasFileOrPropertyOrConditionActivation(Profile profile) {
+            Activation activation = profile.getActivation();
+            return activation != null
+                    && (activation.getFile() != null
+                            || activation.getProperty() != null
+                            || (activation.getCondition() != null
+                                    && !activation.getCondition().isBlank()));
+        }
+
+        /**
+         * Returns {@code true} if the profile's condition expression calls {@code exists()} or
+         * {@code missing()}.  Such profiles must be pre-filtered out when building external
+         * (repository-resolved) models: inside the sandbox, {@code context.exists()} always
+         * returns {@code false}, so {@code missing(path)} evaluates to {@code !false = true}
+         * and fires unconditionally — the same footgun that file-activated profiles expose.
+         */
+        private static boolean hasFileConditionExpression(Profile profile) {
+            Activation a = profile.getActivation();
+            if (a == null || a.getCondition() == null) {
+                return false;
+            }
+            String c = a.getCondition();
+            return c.contains("exists(") || c.contains("missing(");
+        }
+
+        /**
+         * Packaging-activated profiles are handled separately by the consumer POM builder's
+         * {@code inlinePackagingActivatedProfiles()} and must not be activated during
+         * BUILD_CONSUMER model building to avoid double-merging their contributions.
+         */
+        private static boolean hasPackagingActivation(Profile profile) {
+            Activation activation = profile.getActivation();
+            return activation != null && activation.getPackaging() != null;
+        }
+
+        Model readFileModel() throws ModelBuilderException {
+            return readFileModel(new HashSet<>());
+        }
+
+        Model readFileModel(Set<Path> activeModelReads) throws ModelBuilderException {
+            Model model = cache(request.getSource(), FILE, () -> doReadFileModel(activeModelReads));
+            // set the file model in the result outside the cache
+            result.setFileModel(model);
+            return model;
+        }
+
+        @SuppressWarnings("checkstyle:methodlength")
+        Model doReadFileModel(Set<Path> activeModelReads) throws ModelBuilderException {
+            ModelSource modelSource = request.getSource();
+            Model model;
+            Path rootDirectory;
+            boolean rootDirectoryFromSession = false;
+            setSource(modelSource.getLocation());
+            logger.debug("Reading file model from " + modelSource.getLocation());
+            Path sourcePath = modelSource.getPath();
+            // Use toAbsolutePath().normalize() for consistent path identity in activeModelReads.
+            // This must match the normalization used in getEnhancedProperties() guard check
+            // to prevent StackOverflowError from path representation mismatches (GH-12598).
+            Path normalizedPath =
+                    sourcePath != null ? sourcePath.toAbsolutePath().normalize() : null;
+            boolean trackRead = normalizedPath != null && activeModelReads.add(normalizedPath);
+            try {
+                try {
+                    boolean strict = isStrictRequest();
+                    try {
+                        rootDirectory = request.getSession().getRootDirectory();
+                        rootDirectoryFromSession = true;
+                    } catch (IllegalStateException ignore) {
+                        rootDirectory = modelSource.getPath();
+                        while (rootDirectory != null && !Files.isDirectory(rootDirectory)) {
+                            rootDirectory = rootDirectory.getParent();
+                        }
+                    }
+                    try {
+                        model = modelProcessor.read(
+                                modelSource,
+                                Map.of(
+                                        ModelParser.STRICT,
+                                        strict,
+                                        ModelProcessor.TRANSFORMER,
+                                        new ModelInterningTransformer(session)));
+                    } catch (ModelParserException e) {
+                        if (!strict) {
+                            throw e;
+                        }
+                        try {
+                            model = modelProcessor.read(
+                                    modelSource,
+                                    Map.of(
+                                            ModelParser.STRICT,
+                                            false,
+                                            ModelProcessor.TRANSFORMER,
+                                            new ModelInterningTransformer(session)));
+                        } catch (ModelParserException ne) {
+                            // still unreadable even in non-strict mode, rethrow original error
+                            throw e;
+                        }
+
+                        // the document parsed successfully once unknown/misplaced elements were tolerated,
+                        // so it is well-formed XML that merely violates the POM schema - invalid, not malformed
+                        add(
+                                Severity.ERROR,
+                                Version.V20,
+                                "Invalid POM " + modelSource.getLocation() + ": " + e.getMessage(),
+                                e);
+                    }
+                } catch (ModelParserException e) {
+                    if (e.getCause() instanceof IOException ioe) {
+                        String msg = ioe.getMessage();
+                        if (msg == null || msg.isEmpty()) {
+                            // NOTE: There's java.nio.charset.MalformedInputException and sun.io.MalformedInputException
+                            if (ioe.getClass().getName().endsWith("MalformedInputException")) {
+                                msg = "Some input bytes do not match the file encoding.";
+                            } else {
+                                msg = ioe.getClass().getSimpleName();
+                            }
+                        }
+                        add(
+                                Severity.FATAL,
+                                Version.BASE,
+                                "Non-readable POM " + modelSource.getLocation() + ": " + msg,
+                                ioe);
+                    } else {
+                        add(
+                                Severity.FATAL,
+                                Version.BASE,
+                                "Non-parseable POM " + modelSource.getLocation() + ": " + e.getMessage(),
+                                e);
+                    }
+                    throw newModelBuilderException();
+                }
+
+                if (model.getModelVersion() == null) {
+                    String namespace = model.getNamespaceUri();
+                    if (namespace != null && namespace.startsWith(NAMESPACE_PREFIX)) {
+                        model = model.withModelVersion(namespace.substring(NAMESPACE_PREFIX.length()));
+                    }
+                }
+
+                if (isBuildRequest()) {
+                    model = model.withPomFile(modelSource.getPath());
+
+                    Parent parent = model.getParent();
+                    if (parent != null) {
+                        String groupId = parent.getGroupId();
+                        String artifactId = parent.getArtifactId();
+                        String version = parent.getVersion();
+                        String path = parent.getRelativePath();
+                        boolean versionContainsExpression = version != null && version.contains("${");
+                        if ((groupId == null || artifactId == null || version == null || versionContainsExpression)
+                                && (path == null || !path.isEmpty())) {
+                            Path pomFile = model.getPomFile();
+                            Path relativePath = Paths.get(path != null ? path : "..");
+                            Path pomPath = pomFile.resolveSibling(relativePath).normalize();
+                            if (Files.isDirectory(pomPath)) {
+                                pomPath = modelProcessor.locateExistingPom(pomPath);
+                            }
+                            if (pomPath != null && Files.isRegularFile(pomPath)) {
+                                if (rootDirectoryFromSession && !isParentWithinRootDirectory(pomPath, rootDirectory)) {
+                                    add(
+                                            Severity.FATAL,
+                                            Version.BASE,
+                                            "Parent POM " + pomPath + " is located above the root directory "
+                                                    + rootDirectory
+                                                    + ". This setup is invalid when a .mvn directory exists in a subdirectory.",
+                                            parent.getLocation("relativePath"));
+                                    throw newModelBuilderException();
+                                }
+
+                                Model parentModel =
+                                        derive(Sources.buildSource(pomPath)).readFileModel(activeModelReads);
+                                String parentGroupId = getGroupId(parentModel);
+                                String parentArtifactId = parentModel.getArtifactId();
+                                String parentVersion = getVersion(parentModel);
+                                if ((groupId == null || groupId.equals(parentGroupId))
+                                        && (artifactId == null || artifactId.equals(parentArtifactId))
+                                        && (version == null
+                                                || version.equals(parentVersion)
+                                                || versionContainsExpression)) {
+                                    model = model.withParent(parent.with()
+                                            .groupId(parentGroupId)
+                                            .artifactId(parentArtifactId)
+                                            .version(parentVersion)
+                                            .build());
+                                } else {
+                                    mismatchRelativePathAndGA(model, parent, parentGroupId, parentArtifactId);
+                                }
+                            } else {
+                                if (!MODEL_VERSION_4_0_0.equals(model.getModelVersion()) && path != null) {
+                                    wrongParentRelativePath(model);
+                                }
+                            }
+                        }
+                    }
+
+                    // subprojects discovery
+                    if (!hasSubprojectsDefined(model)
+                            // only discover subprojects if POM > 4.0.0
+                            && !MODEL_VERSION_4_0_0.equals(model.getModelVersion())
+                            // and if packaging is POM (we check type, but the session is not yet available,
+                            // we would require the project realm if we want to support extensions
+                            && Type.POM.equals(model.getPackaging())
+                            // and if discovery is not disabled via property
+                            && Features.discoverSubprojects(request.getUserProperties())) {
+                        List<String> subprojects = new ArrayList<>();
+                        try (Stream<Path> files = Files.list(model.getProjectDirectory())) {
+                            for (Path f : files.toList()) {
+                                if (Files.isDirectory(f)) {
+                                    Path subproject = modelProcessor.locateExistingPom(f);
+                                    if (subproject != null) {
+                                        subprojects.add(f.getFileName().toString());
+                                    }
+                                }
+                            }
+                            if (!subprojects.isEmpty()) {
+                                model = model.withSubprojects(subprojects);
+                            }
+                        } catch (IOException e) {
+                            add(Severity.FATAL, Version.V41, "Error discovering subprojects", e);
+                        }
+                    }
+
+                    // Enhanced property resolution with profile activation for CI-friendly versions and repository URLs
+                    // This includes directory properties, profile properties, and user properties
+                    Map<String, String> properties = getEnhancedProperties(model, rootDirectory, activeModelReads);
+
+                    // CI friendly version processing with profile-aware properties
+                    model = model.with()
+                            .version(replaceCiFriendlyVersion(properties, model.getVersion()))
+                            .parent(
+                                    model.getParent() != null
+                                            ? model.getParent()
+                                                    .withVersion(replaceCiFriendlyVersion(
+                                                            properties,
+                                                            model.getParent().getVersion()))
+                                            : null)
+                            .build();
+
+                    // Repository URL interpolation with the same profile-aware properties
+                    UnaryOperator<String> callback = properties::get;
+                    model = model.with()
+                            .repositories(interpolateRepository(model.getRepositories(), callback))
+                            .pluginRepositories(interpolateRepository(model.getPluginRepositories(), callback))
+                            .profiles(map(model.getProfiles(), this::interpolateRepository, callback))
+                            .distributionManagement(interpolateRepository(model.getDistributionManagement(), callback))
+                            .build();
+                    // Override model properties with user properties (use request properties
+                    // to ensure consistency with model interpolation, except for a consumer
+                    // build, see overridingUserProperties())
+                    Map<String, String> userProps = overridingUserProperties();
+                    Map<String, String> newProps = merge(model.getProperties(), userProps);
+                    if (newProps != null) {
+                        model = model.withProperties(newProps);
+                    }
+                    model = model.withProfiles(merge(model.getProfiles(), userProps));
+                } else {
+                    if (modelSource.getPath() != null) {
+                        model = model.withPomFile(modelSource.getPath());
+                    }
+                    if (rootDirectory != null) {
+                        try {
+                            Map<String, String> properties =
+                                    getEnhancedProperties(model, rootDirectory, activeModelReads);
+                            model = model.with()
+                                    .version(replaceCiFriendlyVersion(properties, model.getVersion()))
+                                    .parent(
+                                            model.getParent() != null
+                                                    ? model.getParent()
+                                                            .withVersion(replaceCiFriendlyVersion(
+                                                                    properties,
+                                                                    model.getParent()
+                                                                            .getVersion()))
+                                                    : null)
+                                    .build();
+                        } catch (ModelBuilderException e) {
+                            logger.debug(
+                                    "Could not read root model properties for CI-friendly version interpolation", e);
+                        }
+                    }
+                }
+
+                for (var transformer : transformers) {
+                    model = transformer.transformFileModel(model);
+                }
+
+                setSource(model);
+                modelValidator.validateFileModel(
+                        session,
+                        model,
+                        isStrictRequest()
+                                ? ModelValidator.VALIDATION_LEVEL_STRICT
+                                : ModelValidator.VALIDATION_LEVEL_MINIMAL,
+                        this);
+                InternalSession internalSession = InternalSession.from(session);
+                if (Features.mavenMaven3Personality(internalSession.getSession().getConfigProperties())
+                        && Objects.equals(ModelBuilder.MODEL_VERSION_4_1_0, model.getModelVersion())) {
+                    add(Severity.FATAL, Version.BASE, "Maven3 mode: no higher model version than 4.0.0 allowed");
+                }
+                if (hasFatalErrors()) {
+                    throw newModelBuilderException();
+                }
+
+                return model;
+            } finally {
+                if (trackRead) {
+                    activeModelReads.remove(normalizedPath);
+                }
+            }
+        }
+
+        private DistributionManagement interpolateRepository(
+                DistributionManagement distributionManagement, UnaryOperator<String> callback) {
+            return distributionManagement == null
+                    ? null
+                    : distributionManagement
+                            .with()
+                            .repository((DeploymentRepository)
+                                    interpolateRepository(distributionManagement.getRepository(), callback))
+                            .snapshotRepository((DeploymentRepository)
+                                    interpolateRepository(distributionManagement.getSnapshotRepository(), callback))
+                            .build();
+        }
+
+        private Profile interpolateRepository(Profile profile, UnaryOperator<String> callback) {
+            return profile == null
+                    ? null
+                    : profile.with()
+                            .repositories(interpolateRepository(profile.getRepositories(), callback))
+                            .pluginRepositories(interpolateRepository(profile.getPluginRepositories(), callback))
+                            .build();
+        }
+
+        private List<Repository> interpolateRepository(List<Repository> repositories, UnaryOperator<String> callback) {
+            return map(repositories, this::interpolateRepository, callback);
+        }
+
+        private Repository interpolateRepository(Repository repository, UnaryOperator<String> callback) {
+            return repository == null
+                    ? null
+                    : repository
+                            .with()
+                            .id(interpolator.interpolate(repository.getId(), callback))
+                            .url(interpolator.interpolate(repository.getUrl(), callback))
+                            .build();
+        }
+
+        /**
+         * Merges a list of model profiles with user-defined properties.
+         * For each property defined in both the model and user properties, the user property value
+         * takes precedence and overrides the model value.
+         *
+         * @param profiles list of profiles from the model
+         * @param userProperties map of user-defined properties that override model properties
+         * @return a new list containing profiles with overridden properties if changes were made,
+         *         or the original list if no overrides were needed
+         */
+        List<Profile> merge(List<Profile> profiles, Map<String, String> userProperties) {
+            List<Profile> result = null;
+            for (int i = 0; i < profiles.size(); i++) {
+                Profile profile = profiles.get(i);
+                Map<String, String> props = merge(profile.getProperties(), userProperties);
+                if (props != null) {
+                    Profile merged = profile.withProperties(props);
+                    if (result == null) {
+                        result = new ArrayList<>(profiles);
+                    }
+                    result.set(i, merged);
+                }
+            }
+            return result != null ? result : profiles;
+        }
+
+        /**
+         * Returns the user properties that override the properties declared in the model, in the
+         * main block and in every profile.
+         * <p>
+         * A {@link ModelBuilderRequest.RequestType#BUILD_CONSUMER} request carries, besides the
+         * session's user properties, the properties of the profiles that were active when the
+         * project was built (see {@code DefaultConsumerPomBuilder}). They let the coordinates those
+         * profiles supply interpolate and validate (MNG-8709), but they describe the producer's
+         * environment: the consumer re-evaluates the profile activation itself, so only the
+         * properties the user actually passed may be written into the consumer POM (GH-13761).
+         * Every other build request overrides with the request's user properties, which the
+         * caller may have tailored on purpose.
+         *
+         * @return the user properties to apply over the declared model properties
+         */
+        Map<String, String> overridingUserProperties() {
+            if (request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_CONSUMER) {
+                return request.getSession().getUserProperties();
+            }
+            return request.getUserProperties();
+        }
+
+        /**
+         * Merges model properties with user properties, giving precedence to user properties.
+         * For any property key present in both maps, the user property value will override
+         * the model property value when they differ.
+         *
+         * @param properties properties defined in the model
+         * @param userProperties user-defined properties that override model properties
+         * @return a new map with model properties overridden by user properties if changes were needed,
+         *         or null if no overrides were needed
+         */
+        Map<String, String> merge(Map<String, String> properties, Map<String, String> userProperties) {
+            Map<String, String> result = null;
+            for (Map.Entry<String, String> entry : properties.entrySet()) {
+                String key = entry.getKey();
+                String value = userProperties.get(key);
+                if (value != null && !Objects.equals(value, entry.getValue())) {
+                    if (result == null) {
+                        result = new LinkedHashMap<>(properties);
+                    }
+                    result.put(entry.getKey(), value);
+                }
+            }
+            return result;
+        }
+
+        Model readRawModel() throws ModelBuilderException {
+            // ensure file model is available
+            readFileModel();
+            Model model = cache(request.getSource(), RAW, this::doReadRawModel);
+            // set the raw model in the result outside the cache
+            result.setRawModel(model);
+            return model;
+        }
+
+        private Model doReadRawModel() throws ModelBuilderException {
+            Model rawModel = readFileModel();
+
+            if (!MODEL_VERSION_4_0_0.equals(rawModel.getModelVersion()) && isBuildRequest()) {
+                rawModel = transformFileToRaw(rawModel);
+            }
+
+            for (var transformer : transformers) {
+                rawModel = transformer.transformRawModel(rawModel);
+            }
+
+            modelValidator.validateRawModel(
+                    session,
+                    rawModel,
+                    isStrictRequest()
+                            ? ModelValidator.VALIDATION_LEVEL_STRICT
+                            : ModelValidator.VALIDATION_LEVEL_MINIMAL,
+                    this);
+
+            if (hasFatalErrors()) {
+                throw newModelBuilderException();
+            }
+
+            return rawModel;
+        }
+
+        /**
+         * Record to store both the parent model and its activated profiles for caching.
+         */
+        private record ParentModelWithProfiles(Model model, List<Profile> activatedProfiles) {}
+
+        /**
+         * Reads the request source's parent with cycle detection.
+         */
+        Model readAsParentModel(DefaultProfileActivationContext profileActivationContext, Set<String> parentChain)
+                throws ModelBuilderException {
+            return readParentFrames(new ParentModelFrame(profileActivationContext, parentChain));
+        }
+
+        private Map<DefaultProfileActivationContext.Record, ParentModelWithProfiles> parentModelsPerContext() {
+            // Partition the cache by externalOrigin so a parent model resolved while building
+            // the operator's own project never shares an entry with the same source resolved
+            // while resolving a dependency: the two contexts activate profiles differently (see
+            // getActiveProfiles below), and the model built for one must not be reused for the
+            // other, even though both are keyed off the same underlying source.
+            //
+            // This partition is a defensive backstop, not the primary guard: cache(source, tag,
+            // supplier) additionally scopes each entry to the top-level request (see
+            // getOuterRequest()), which falls back to the request object's own identity once its
+            // RequestTrace has no further request-typed ancestor. Two independently-built request
+            // objects therefore land in different buckets regardless of this tag, and never reach
+            // this collision in practice; the tag matters only when two reads end up sharing a
+            // request object (as derive() calls from a common ancestor can), which is why it is
+            // kept even though the getActiveProfiles gate above already decides the correct
+            // activation for each read on its own.
+            return cache(request.getSource(), externalOrigin ? PARENT_EXTERNAL : PARENT, ConcurrentHashMap::new);
+        }
+
+        private Model findCachedParent(
+                DefaultProfileActivationContext profileActivationContext,
+                Map<DefaultProfileActivationContext.Record, ParentModelWithProfiles> parentsPerContext) {
+            for (Map.Entry<DefaultProfileActivationContext.Record, ParentModelWithProfiles> e :
+                    parentsPerContext.entrySet()) {
+                if (e.getKey().matches(profileActivationContext)) {
+                    ParentModelWithProfiles cached = e.getValue();
+                    // CRITICAL: On cache hit, we need to replay the cached record's keys into the
+                    // current recording context. The matches() method already re-evaluated the
+                    // conditions and recorded some keys in ctx, but we also need to ensure all
+                    // the keys from the cached record are recorded in the current context.
+                    if (profileActivationContext.record != null) {
+                        replayRecordIntoContext(e.getKey(), profileActivationContext);
+                    }
+                    // Add the activated profiles from cache to the result
+                    // Use ModelProblemUtils.toId() to get groupId:artifactId:version format (without packaging)
+                    addActivePomProfiles(ModelProblemUtils.toId(cached.model()), cached.activatedProfiles());
+                    return cached.model();
+                }
+            }
+
+            return null;
+        }
+
+        // Frames retain the same sessions and activation contexts as recursive calls, but
+        // return completed models through the deque rather than through the Java stack.
+        private Model readParentFrames(ParentFrame first) {
+            ArrayDeque<ParentFrame> frames = new ArrayDeque<>();
+            Set<ModelSource> activeSources = new LinkedHashSet<>();
+            Set<ResolvedParentKey> activeParents = new LinkedHashSet<>();
+            frames.push(first);
+            try {
+                while (!frames.isEmpty()) {
+                    ParentFrame frame = frames.peek();
+                    ParentFrame next = frame.advance(activeSources, activeParents);
+                    if (next != null) {
+                        frames.push(next);
+                    } else if (frame.complete) {
+                        frames.pop().close();
+                        if (frames.isEmpty()) {
+                            return frame.value;
+                        }
+                        frames.peek().value = frame.value;
+                    }
+                }
+                throw new IllegalStateException("No parent model produced");
+            } finally {
+                while (!frames.isEmpty()) {
+                    frames.pop().close();
+                }
+            }
+        }
+
+        private abstract class ParentFrame {
+            Model value;
+            boolean complete;
+
+            abstract ParentFrame advance(Set<ModelSource> activeSources, Set<ResolvedParentKey> activeParents);
+
+            void finish(Model model) {
+                value = model;
+                complete = true;
+            }
+
+            void close() {}
+        }
+
+        private enum ParentResolutionPhase {
+            START,
+            LOCAL,
+            EXTERNAL
+        }
+
+        private class ParentResolutionFrame extends ParentFrame {
+            private final Model child;
+            private final Parent parent;
+            private final DefaultProfileActivationContext context;
+            private final Set<String> chain;
+            private final boolean declaredParent;
+            private final boolean externalOnly;
+            private ParentResolutionPhase phase = ParentResolutionPhase.START;
+            private ModelBuilderSessionState derived;
+            private Parent resolvedParent;
+            private String parentId;
+            private String localLocation;
+
+            ParentResolutionFrame(
+                    Model child,
+                    Parent parent,
+                    DefaultProfileActivationContext context,
+                    Set<String> chain,
+                    boolean declaredParent,
+                    boolean externalOnly) {
+                this.child = child;
+                this.parent = parent;
+                this.context = context;
+                this.chain = chain;
+                this.declaredParent = declaredParent;
+                this.externalOnly = externalOnly;
+            }
+
+            @Override
+            ParentFrame advance(Set<ModelSource> activeSources, Set<ResolvedParentKey> activeParents) {
+                if (phase == ParentResolutionPhase.START) {
+                    if (declaredParent && parent == null) {
+                        String version = child.getModelVersion();
+                        finish(getSuperModel(
+                                version != null && KNOWN_MODEL_VERSIONS.contains(version)
+                                        ? version
+                                        : MODEL_VERSION_4_0_0));
+                        return null;
+                    }
+                    if (declaredParent) {
+                        parentId =
+                                enter(parent.getGroupId() + ":" + parent.getArtifactId() + ":" + parent.getVersion());
+                    }
+                    ModelSource source = !externalOnly && isBuildRequest() ? findLocalParent(child, parent) : null;
+                    if (source != null) {
+                        localLocation = enter(source.getLocation());
+                        derived = derive(
+                                request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_CONSUMER
+                                        ? ModelBuilderRequest.builder(request)
+                                                .requestType(ModelBuilderRequest.RequestType.CONSUMER_PARENT)
+                                                .source(source)
+                                                .build()
+                                        : ModelBuilderRequest.build(request, source));
+                        // Reject a wrong GA before descending into its ancestry (GH-12074).
+                        Model file = derived.readFileModel();
+                        if ((parent.getGroupId() == null || Objects.equals(parent.getGroupId(), getGroupId(file)))
+                                && (parent.getArtifactId() == null
+                                        || Objects.equals(parent.getArtifactId(), file.getArtifactId()))) {
+                            phase = ParentResolutionPhase.LOCAL;
+                            return derived.new ParentModelFrame(context, chain);
+                        }
+                        mismatchRelativePathAndGA(child, parent, getGroupId(file), file.getArtifactId());
+                        leaveLocal();
+                    }
+                    return external();
+                }
+
+                derived.result
+                        .getActivePomProfilesByModel()
+                        .forEach(ModelBuilderSessionState.this::addActivePomProfiles);
+                if (phase == ParentResolutionPhase.LOCAL) {
+                    boolean matches;
+                    try {
+                        matches = isLocalParentVersion(child, parent, value);
+                    } finally {
+                        leaveLocal();
+                    }
+                    if (!matches) {
+                        return external();
+                    }
+                } else {
+                    validateExternalParentVersion(child, resolvedParent, parent.getVersion());
+                }
+                if (declaredParent) {
+                    if (!"pom".equals(value.getPackaging())) {
+                        add(
+                                Severity.ERROR,
+                                Version.BASE,
+                                "Invalid packaging for parent POM " + ModelProblemUtils.toSourceHint(value)
+                                        + ", must be \"pom\" but is \"" + value.getPackaging() + "\"",
+                                value.getLocation("packaging"));
+                    }
+                    result.setParentModel(value);
+                }
+                // ParentModelFrame has already assembled all ancestors and removed the parent reference.
+                finish(value);
+                return null;
+            }
+
+            private ParentFrame external() {
+                ExternalParent external = resolveExternalParent(child, parent);
+                derived = external.state();
+                resolvedParent = external.parent();
+                phase = ParentResolutionPhase.EXTERNAL;
+                return derived.new ParentModelFrame(context, chain, external.key());
+            }
+
+            private String enter(String marker) {
+                if (!chain.add(marker)) {
+                    add(
+                            Severity.FATAL,
+                            Version.BASE,
+                            "The parents form a cycle: " + String.join(" -> ", chain) + " -> " + marker);
+                    throw newModelBuilderException();
+                }
+                return marker;
+            }
+
+            private void leaveLocal() {
+                if (localLocation != null) {
+                    chain.remove(localLocation);
+                    localLocation = null;
+                }
+            }
+
+            @Override
+            void close() {
+                leaveLocal();
+                if (parentId != null) {
+                    chain.remove(parentId);
+                    parentId = null;
+                }
+            }
+        }
+
+        private enum ParentModelPhase {
+            START,
+            PARENT,
+            MIXIN,
+            MERGE_MIXIN
+        }
+
+        private class ParentModelFrame extends ParentFrame {
+            private final DefaultProfileActivationContext context;
+            private final Set<String> chain;
+            private final ResolvedParentKey resolvedParent;
+            private ParentModelPhase phase = ParentModelPhase.START;
+            private Map<DefaultProfileActivationContext.Record, ParentModelWithProfiles> models;
+            private DefaultProfileActivationContext recording;
+            private DefaultInheritanceAssembler assembler;
+            private Model model;
+            private Iterator<Mixin> mixins;
+            private Set<ModelSource> activeSources;
+            private Set<ResolvedParentKey> activeParents;
+
+            ParentModelFrame(DefaultProfileActivationContext context, Set<String> chain) {
+                this(context, chain, null);
+            }
+
+            ParentModelFrame(
+                    DefaultProfileActivationContext context, Set<String> chain, ResolvedParentKey resolvedParent) {
+                this.context = context;
+                this.chain = chain;
+                this.resolvedParent = resolvedParent;
+            }
+
+            @Override
+            ParentFrame advance(Set<ModelSource> activeSources, Set<ResolvedParentKey> activeParents) {
+                switch (phase) {
+                    case START -> {
+                        models = parentModelsPerContext();
+                        Model cached = findCachedParent(context, models);
+                        if (cached != null) {
+                            finish(cached);
+                        } else {
+                            // Mixins resolved externally have no GAV or local-path ancestry marker.
+                            // Keep source identity separate and acquire it only while assembling a cache miss.
+                            ModelSource source = request.getSource();
+                            if (!activeSources.add(source)) {
+                                add(
+                                        Severity.FATAL,
+                                        Version.BASE,
+                                        "The parents form a cycle: "
+                                                + activeSources.stream()
+                                                        .map(ModelSource::getLocation)
+                                                        .collect(Collectors.joining(" -> "))
+                                                + " -> " + source.getLocation());
+                                throw newModelBuilderException();
+                            }
+                            this.activeSources = activeSources;
+                            // Opaque sources need not implement value equality or have unique display locations.
+                            if (resolvedParent != null) {
+                                if (!activeParents.add(resolvedParent)) {
+                                    add(
+                                            Severity.FATAL,
+                                            Version.BASE,
+                                            "The parents form a cycle: " + activeParents + " -> " + resolvedParent);
+                                    throw newModelBuilderException();
+                                }
+                                this.activeParents = activeParents;
+                            }
+                            recording = context.start();
+                            model = readRawModel();
+                            Model parentResolutionModel = model;
+                            if (model.getProfiles().stream()
+                                    .anyMatch(p -> !p.getRepositories().isEmpty())) {
+                                // Parent lookup needs profile repositories before assembling the ancestry.
+                                // Keep final profile injection after inheritance, using the child's context.
+                                DefaultProfileActivationContext activation = recording.start(model.getProperties());
+                                List<Profile> profiles = getActiveProfiles(model.getProfiles(), activation);
+                                replayRecordIntoContext(activation.stop(), recording, false);
+                                parentResolutionModel = profileInjector.injectProfiles(
+                                        model, profiles, request, ModelBuilderSessionState.this);
+                            }
+                            phase = ParentModelPhase.PARENT;
+                            return new ParentResolutionFrame(
+                                    parentResolutionModel, model.getParent(), recording, chain, true, false);
+                        }
+                    }
+                    case PARENT -> {
+                        assembler = parentInheritanceAssembler();
+                        model = assembler.assembleModelInheritance(
+                                model, value, request, ModelBuilderSessionState.this);
+                        mixins = model.getMixins().iterator();
+                        phase = ParentModelPhase.MIXIN;
+                    }
+                    case MIXIN -> {
+                        if (mixins.hasNext()) {
+                            phase = ParentModelPhase.MERGE_MIXIN;
+                            return new ParentResolutionFrame(model, mixins.next(), recording, chain, false, false);
+                        }
+                        // Evaluate with the parent's properties but the child's basedir (as Maven 3 does);
+                        // parent properties are kept out of the cache key since they derive from the source.
+                        DefaultProfileActivationContext activation = recording.start(model.getProperties());
+                        List<Profile> profiles = getActiveProfiles(model.getProfiles(), activation);
+                        replayRecordIntoContext(activation.stop(), recording, false);
+                        model = profileInjector
+                                .injectProfiles(model, profiles, request, ModelBuilderSessionState.this)
+                                .withProfiles(List.of())
+                                .withParent(null);
+                        DefaultProfileActivationContext.Record record = recording.stop();
+                        replayRecordIntoContext(record, context);
+                        models.put(record, new ParentModelWithProfiles(model, profiles));
+                        addActivePomProfiles(ModelProblemUtils.toId(model), profiles);
+                        finish(model);
+                    }
+                    case MERGE_MIXIN -> {
+                        model = assembler.assembleModelInheritance(
+                                model, value, request, ModelBuilderSessionState.this);
+                        Map<String, String> properties = new HashMap<>(model.getProperties());
+                        properties.putAll(value.getProperties());
+                        model = model.withProperties(properties);
+                        phase = ParentModelPhase.MIXIN;
+                    }
+                    default -> throw new IllegalStateException("Unexpected parent model phase: " + phase);
+                }
+                return null;
+            }
+
+            @Override
+            void close() {
+                if (activeParents != null) {
+                    activeParents.remove(resolvedParent);
+                    activeParents = null;
+                }
+                if (activeSources != null) {
+                    activeSources.remove(request.getSource());
+                    activeSources = null;
+                }
+            }
+        }
+
+        private DefaultInheritanceAssembler parentInheritanceAssembler() {
+            return new DefaultInheritanceAssembler(new DefaultInheritanceAssembler.InheritanceModelMerger() {
+                @Override
+                protected void mergeModel_Modules(
+                        Model.Builder builder,
+                        Model target,
+                        Model source,
+                        boolean sourceDominant,
+                        Map<Object, Object> context) {}
+
+                @Override
+                protected void mergeModel_Subprojects(
+                        Model.Builder builder,
+                        Model target,
+                        Model source,
+                        boolean sourceDominant,
+                        Map<Object, Object> context) {}
+            });
+        }
+
+        private Model importDependencyManagement(Model model, Collection<String> importIds) {
+            DependencyManagement depMgmt = model.getDependencyManagement();
+
+            if (depMgmt == null) {
+                return model;
+            }
+
+            String importing = model.getGroupId() + ':' + model.getArtifactId() + ':' + model.getVersion();
+
+            importIds.add(importing);
+
+            List<DependencyManagement> importMgmts = null;
+
+            List<Dependency> deps = new ArrayList<>(depMgmt.getDependencies());
+            for (Iterator<Dependency> it = deps.iterator(); it.hasNext(); ) {
+                Dependency dependency = it.next();
+
+                if (!(("pom".equals(dependency.getType()) && "import".equals(dependency.getScope()))
+                        || "bom".equals(dependency.getType()))) {
+                    continue;
+                }
+
+                it.remove();
+
+                DependencyManagement importMgmt = loadDependencyManagement(dependency, importIds);
+
+                if (importMgmt != null) {
+                    if (importMgmts == null) {
+                        importMgmts = new ArrayList<>();
+                    }
+
+                    importMgmts.add(importMgmt);
+                }
+            }
+
+            importIds.remove(importing);
+
+            model = model.withDependencyManagement(
+                    model.getDependencyManagement().withDependencies(deps));
+
+            return dependencyManagementImporter.importManagement(
+                    model, importMgmts, request, deduplicatingImportProblemCollector());
+        }
+
+        private ModelProblemCollector deduplicatingImportProblemCollector() {
+            return new DeduplicatingImportProblemCollector();
+        }
+
+        /**
+         * A {@link ModelProblemCollector} wrapper that deduplicates BOM import conflict warnings
+         * within a single top-level build.  When a warning originates from a reactor module,
+         * it is routed to that module's own problem collector so the warning appears next to the
+         * declaration rather than being repeated for every inheriting child.  Non-warning problems
+         * and warnings without a resolvable source are forwarded to the enclosing
+         * {@link ModelBuilderSessionState} unchanged.
+         */
+        private class DeduplicatingImportProblemCollector implements ModelProblemCollector {
+            @Override
+            public ProblemCollector<ModelProblem> getProblemCollector() {
+                return ModelBuilderSessionState.this.getProblemCollector();
+            }
+
+            @Override
+            public void add(
+                    BuilderProblem.Severity severity,
+                    ModelProblem.Version version,
+                    String message,
+                    InputLocation location,
+                    Exception exception) {
+                if (severity == Severity.WARNING && location != null && location.getSource() != null) {
+                    var source = location.getSource();
+                    String sourceLocation = source.getLocation();
+                    ImportWarningKey key = new ImportWarningKey(
+                            message,
+                            sourceLocation,
+                            source.getModelId(),
+                            location.getLineNumber(),
+                            location.getColumnNumber());
+                    if (!reportedImportWarnings.add(key)) {
+                        return;
+                    }
+                    ProblemCollector<ModelProblem> collector =
+                            sourceLocation != null ? reactorProblemCollectors.get(sourceLocation) : null;
+                    if (collector != null) {
+                        collector.reportProblem(new DefaultModelProblem(
+                                message,
+                                severity,
+                                version,
+                                sourceLocation,
+                                location.getLineNumber(),
+                                location.getColumnNumber(),
+                                source.getModelId(),
+                                exception));
+                        return;
+                    }
+                }
+                ModelBuilderSessionState.this.add(severity, version, message, location, exception);
+            }
+
+            @Override
+            public ModelBuilderException newModelBuilderException() {
+                return ModelBuilderSessionState.this.newModelBuilderException();
+            }
+
+            @Override
+            public void setSource(String location) {
+                ModelBuilderSessionState.this.setSource(location);
+            }
+
+            @Override
+            public void setSource(Model model) {
+                ModelBuilderSessionState.this.setSource(model);
+            }
+
+            @Override
+            public String getSource() {
+                return ModelBuilderSessionState.this.getSource();
+            }
+
+            @Override
+            public void setRootModel(Model model) {
+                ModelBuilderSessionState.this.setRootModel(model);
+            }
+
+            @Override
+            public Model getRootModel() {
+                return ModelBuilderSessionState.this.getRootModel();
+            }
+        }
+
+        /**
+         * Registers the problem collector under both the location string (path form) and
+         * the URI form of the source.  Import warnings produced by
+         * {@link DefaultDependencyManagementImporter} carry whichever form the resolver
+         * happened to record, so both keys are registered as a safety net to ensure a
+         * lookup in {@link DeduplicatingImportProblemCollector#add} always finds the
+         * declaring model's collector.
+         */
+        private void registerReactorProblemCollector(
+                ModelSource source, ProblemCollector<ModelProblem> problemCollector) {
+            if (source.getLocation() != null) {
+                reactorProblemCollectors.put(source.getLocation(), problemCollector);
+            }
+            if (source.getPath() != null) {
+                reactorProblemCollectors.put(source.getPath().toUri().toString(), problemCollector);
+            }
+        }
+
+        private DependencyManagement loadDependencyManagement(Dependency dependency, Collection<String> importIds) {
+            String groupId = dependency.getGroupId();
+            String artifactId = dependency.getArtifactId();
+            String version = dependency.getVersion();
+
+            if (groupId == null || groupId.isEmpty()) {
+                add(
+                        Severity.ERROR,
+                        Version.BASE,
+                        "'dependencyManagement.dependencies.dependency.groupId' for " + dependency.getManagementKey()
+                                + " is missing.",
+                        dependency.getLocation(""));
+                return null;
+            }
+            if (artifactId == null || artifactId.isEmpty()) {
+                add(
+                        Severity.ERROR,
+                        Version.BASE,
+                        "'dependencyManagement.dependencies.dependency.artifactId' for " + dependency.getManagementKey()
+                                + " is missing.",
+                        dependency.getLocation(""));
+                return null;
+            }
+            if (version == null || version.isEmpty()) {
+                add(
+                        Severity.ERROR,
+                        Version.BASE,
+                        "'dependencyManagement.dependencies.dependency.version' for " + dependency.getManagementKey()
+                                + " is missing.",
+                        dependency.getLocation(""));
+                return null;
+            }
+
+            String imported = groupId + ':' + artifactId + ':' + version;
+
+            if (importIds.contains(imported)) {
+                StringBuilder message =
+                        new StringBuilder("The dependencies of type=pom and with scope=import form a cycle: ");
+                for (String modelId : importIds) {
+                    message.append(modelId).append(" -> ");
+                }
+                message.append(imported);
+                add(Severity.ERROR, Version.BASE, message.toString());
+                return null;
+            }
+
+            Model importModel = cache(
+                    repositories,
+                    groupId,
+                    artifactId,
+                    version,
+                    null,
+                    IMPORT,
+                    () -> doLoadDependencyManagement(dependency, groupId, artifactId, version, importIds));
+            DependencyManagement importMgmt = importModel != null ? importModel.getDependencyManagement() : null;
+            if (importMgmt == null) {
+                importMgmt = DependencyManagement.newInstance();
+            }
+
+            // [MNG-5600] Dependency management import should support exclusions.
+            List<Exclusion> exclusions = dependency.getExclusions();
+            if (importMgmt != null && !exclusions.isEmpty()) {
+                // Dependency excluded from import.
+                List<Dependency> dependencies = importMgmt.getDependencies().stream()
+                        .filter(candidate -> exclusions.stream().noneMatch(exclusion -> match(exclusion, candidate)))
+                        .map(candidate -> addExclusions(candidate, exclusions))
+                        .collect(Collectors.toList());
+                importMgmt = importMgmt.withDependencies(dependencies);
+            }
+
+            return DependencyManagement.newBuilder(importMgmt, true)
+                    .importedFrom(dependency.getLocation(""))
+                    .build();
+        }
+
+        @SuppressWarnings("checkstyle:parameternumber")
+        private Model doLoadDependencyManagement(
+                Dependency dependency,
+                String groupId,
+                String artifactId,
+                String version,
+                Collection<String> importIds) {
+            Model importModel;
+            ModelSource importSource;
+            boolean repositoryResolved = false;
+            try {
+                importSource = resolveReactorModel(groupId, artifactId, version);
+                if (importSource == null) {
+                    importSource = modelResolver.resolveModel(
+                            request.getSession(), repositories, dependency, new AtomicReference<>());
+                    repositoryResolved = true;
+                }
+            } catch (ModelBuilderException | ModelResolverException e) {
+                StringBuilder buffer = new StringBuilder(256);
+                buffer.append("Non-resolvable import POM");
+                if (!containsCoordinates(e.getMessage(), groupId, artifactId, version)) {
+                    buffer.append(' ').append(ModelProblemUtils.toId(groupId, artifactId, version));
+                }
+                buffer.append(": ").append(e.getMessage());
+
+                add(Severity.ERROR, Version.BASE, buffer.toString(), dependency.getLocation(""), e);
+                return null;
+            }
+
+            Path rootDirectory;
+            try {
+                rootDirectory = request.getSession().getRootDirectory();
+            } catch (IllegalStateException e) {
+                rootDirectory = null;
+            }
+            if (request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT && rootDirectory != null) {
+                Path sourcePath = importSource.getPath();
+                if (sourcePath != null && sourcePath.startsWith(rootDirectory)) {
+                    add(
+                            Severity.WARNING,
+                            Version.BASE,
+                            "BOM import '"
+                                    + ModelProblemUtils.toId(groupId, artifactId, version)
+                                    + "' references a module within the same reactor."
+                                    + " The BOM will be evaluated without conditional profile activation"
+                                    + " (file/property/condition), which may produce an incomplete"
+                                    + " dependencyManagement compared to the BOM's own build."
+                                    + " Prefer parent POM inheritance for intra-reactor version management and generated BOMs for downstream consumption.",
+                            dependency.getLocation(""));
+                }
+            }
+
+            final ModelBuilderResult importResult;
+            try {
+                ModelBuilderRequest importRequest = ModelBuilderRequest.builder()
+                        .session(request.getSession())
+                        .requestType(ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY)
+                        .systemProperties(request.getSystemProperties())
+                        .userProperties(request.getUserProperties())
+                        .source(importSource)
+                        .repositories(repositories)
+                        .build();
+                ModelBuilderSessionState modelBuilderSession = derive(importRequest);
+                // build the effective model
+                modelBuilderSession.buildEffectiveModel(importIds);
+                importResult = modelBuilderSession.result;
+            } catch (ModelBuilderException e) {
+                return null;
+            }
+
+            importModel = importResult.getEffectiveModel();
+
+            if (repositoryResolved) {
+                importModel = rejectSystemScopeFromRepositoryImport(importModel, dependency);
+            }
+
+            return importModel;
+        }
+
+        /**
+         * Dependency management imported (as a BOM) from a POM resolved from a repository, rather
+         * than from the local reactor, may not declare {@code system} scope or a
+         * {@code systemPath} for a managed dependency: by default, offending entries are dropped
+         * from the imported management (so a cached import cannot re-introduce them) and a
+         * warning is emitted, unless the
+         * {@code maven.repository.dependencyManagement.allowSystemScope} user property is set to
+         * {@code true}, in which case they are imported as before, with a warning. Dependency
+         * management imported from the local reactor is not affected.
+         */
+        private Model rejectSystemScopeFromRepositoryImport(Model importModel, Dependency dependency) {
+            DependencyManagement importMgmt = importModel != null ? importModel.getDependencyManagement() : null;
+            if (importMgmt == null) {
+                return importModel;
+            }
+            String offending = importMgmt.getDependencies().stream()
+                    .filter(DefaultModelBuilder::usesSystemScope)
+                    .map(Dependency::getManagementKey)
+                    .collect(Collectors.joining(", "));
+            if (offending.isEmpty()) {
+                return importModel;
+            }
+            String allow = request.getUserProperties()
+                    .getOrDefault(
+                            Constants.MAVEN_REPOSITORY_DEPENDENCY_MANAGEMENT_ALLOW_SYSTEM_SCOPE,
+                            request.getSystemProperties()
+                                    .get(Constants.MAVEN_REPOSITORY_DEPENDENCY_MANAGEMENT_ALLOW_SYSTEM_SCOPE));
+            if (Boolean.parseBoolean(allow)) {
+                add(
+                        Severity.WARNING,
+                        Version.V41,
+                        "The import POM " + ModelProblemUtils.toId(importModel)
+                                + " declares 'system' scope or 'systemPath' for " + offending
+                                + "; importing it because the '"
+                                + Constants.MAVEN_REPOSITORY_DEPENDENCY_MANAGEMENT_ALLOW_SYSTEM_SCOPE
+                                + "' user property is set to 'true'.",
+                        dependency.getLocation(""));
+                return importModel;
+            }
+            add(
+                    Severity.WARNING,
+                    Version.V41,
+                    "The import POM " + ModelProblemUtils.toId(importModel)
+                            + " was resolved from a repository and declares 'system' scope or 'systemPath' for "
+                            + offending + "; these entries are not imported. Remove the 'system' scope from the"
+                            + " imported POM, or set the '"
+                            + Constants.MAVEN_REPOSITORY_DEPENDENCY_MANAGEMENT_ALLOW_SYSTEM_SCOPE
+                            + "' user property to 'true' to import them as before.",
+                    dependency.getLocation(""));
+            List<Dependency> retained = importMgmt.getDependencies().stream()
+                    .filter(d -> !usesSystemScope(d))
+                    .collect(Collectors.toList());
+            return importModel.withDependencyManagement(importMgmt.withDependencies(retained));
+        }
+
+        ModelSource resolveReactorModel(String groupId, String artifactId, String version)
+                throws ModelBuilderException {
+            Set<ModelSource> sources = mappedSources.get(new GAKey(groupId, artifactId));
+            if (sources != null) {
+                for (ModelSource source : sources) {
+                    Model model = derive(source).readRawModel();
+                    if (Objects.equals(getVersion(model), version)) {
+                        return source;
+                    }
+                }
+                // TODO: log a warning ?
+            }
+            return null;
+        }
+
+        private <T> T cache(
+                List<RemoteRepository> repositories,
+                String groupId,
+                String artifactId,
+                String version,
+                String classifier,
+                String tag,
+                Supplier<T> supplier) {
+            RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(session, request);
+            try {
+                RgavCacheKey r = new RgavCacheKey(
+                        session, trace.mvnTrace(), repositories, groupId, artifactId, version, classifier, tag);
+                SourceResponse<RgavCacheKey, T> response =
+                        InternalSession.from(session).request(r, tr -> new SourceResponse<>(tr, supplier.get()));
+                return response.response;
+            } finally {
+                RequestTraceHelper.exit(trace);
+            }
+        }
+
+        private <T> T cache(Source source, String tag, Supplier<T> supplier) throws ModelBuilderException {
+            RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(session, request);
+            try {
+                SourceCacheKey r = new SourceCacheKey(session, trace.mvnTrace(), source, tag);
+                SourceResponse<SourceCacheKey, T> response =
+                        InternalSession.from(session).request(r, tr -> new SourceResponse<>(tr, supplier.get()));
+                return response.response;
+            } finally {
+                RequestTraceHelper.exit(trace);
+            }
+        }
+
+        /**
+         * Whether the request uses project-level semantics (local parent lookup, profile activation, etc.).
+         * This includes both strict build requests and the lenient {@link ModelBuilderRequest.RequestType#LOAD_PROJECT}
+         * type, which behaves like a build request for resolution purposes but does not enforce strict validation.
+         *
+         * @see #isStrictRequest() for requests that also require strict parsing and validation
+         */
+        boolean isBuildRequest() {
+            return request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT
+                    || request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_EFFECTIVE
+                    || request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_CONSUMER
+                    || request.getRequestType() == ModelBuilderRequest.RequestType.LOAD_PROJECT;
+        }
+
+        /**
+         * Whether the model has to be parsed and validated strictly. This is the case for the build requests, but not
+         * for {@link ModelBuilderRequest.RequestType#LOAD_PROJECT}, which is a project only in terms of semantics
+         * (local parents, profile activation) and keeps the lenient defaults of the consumer requests.
+         */
+        boolean isStrictRequest() {
+            return request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT
+                    || request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_EFFECTIVE
+                    || request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_CONSUMER;
+        }
+
+        boolean isBuildRequestWithActivation() {
+            return request.getRequestType() != ModelBuilderRequest.RequestType.BUILD_CONSUMER;
+        }
+
+        /**
+         * Replays the keys from a cached record into the current recording context.
+         * This ensures that when there's a cache hit, all the keys that were originally
+         * accessed during the cached computation are recorded in the current context.
+         */
+        private void replayRecordIntoContext(
+                DefaultProfileActivationContext.Record cachedRecord, DefaultProfileActivationContext targetContext) {
+            replayRecordIntoContext(cachedRecord, targetContext, true);
+        }
+
+        private void replayRecordIntoContext(
+                DefaultProfileActivationContext.Record cachedRecord,
+                DefaultProfileActivationContext targetContext,
+                boolean includeModelProperties) {
+            if (targetContext.record == null) {
+                return; // Target context is not recording
+            }
+
+            // Replay all the recorded keys from the cached record into the target context's record
+            // We need to access the mutable maps in the target context's record
+            DefaultProfileActivationContext.Record targetRecord = targetContext.record;
+
+            // Replay active profiles
+            cachedRecord.usedActiveProfiles.forEach(targetRecord.usedActiveProfiles::putIfAbsent);
+
+            // Replay inactive profiles
+            cachedRecord.usedInactiveProfiles.forEach(targetRecord.usedInactiveProfiles::putIfAbsent);
+
+            // Replay system properties
+            cachedRecord.usedSystemProperties.forEach(targetRecord.usedSystemProperties::putIfAbsent);
+
+            // Replay user properties
+            cachedRecord.usedUserProperties.forEach(targetRecord.usedUserProperties::putIfAbsent);
+
+            // Replay model properties
+            if (includeModelProperties) {
+                cachedRecord.usedModelProperties.forEach(targetRecord.usedModelProperties::putIfAbsent);
+            }
+
+            // Replay model infos
+            cachedRecord.usedModelInfos.forEach(targetRecord.usedModelInfos::putIfAbsent);
+
+            // Replay exists checks
+            cachedRecord.usedExists.forEach(targetRecord.usedExists::putIfAbsent);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static List<String> getSubprojects(Model activated) {
+        List<String> subprojects = activated.getSubprojects();
+        if (subprojects.isEmpty()) {
+            subprojects = activated.getModules();
+        }
+        return subprojects;
+    }
+
+    /**
+     * Checks whether the model has a non-empty {@code <subprojects>} or {@code <modules>} element.
+     * <p>
+     * When this returns {@code false} and auto-discovery is enabled (via
+     * {@link Features#discoverSubprojects(Map)}), Maven will scan subdirectories
+     * for POM files. Users who want to suppress discovery without listing subprojects
+     * can set {@code -Dmaven.project.discoverSubprojects=false}.
+     */
+    @SuppressWarnings("deprecation")
+    private static boolean hasSubprojectsDefined(Model model) {
+        return !model.getSubprojects().isEmpty() || !model.getModules().isEmpty();
+    }
+
+    @Override
+    public Model buildRawModel(ModelBuilderRequest request) throws ModelBuilderException {
+        RequestTraceHelper.ResolverTrace trace = RequestTraceHelper.enter(request.getSession(), request);
+        try {
+            ModelOperationRequest operation =
+                    new ModelOperationRequest(request, ModelOperation.RAW_MODEL, trace.mvnTrace());
+            return InternalSession.from(request.getSession()).request(operation, this::doBuildRawModel).response;
+        } finally {
+            // Clear operation results while retaining internal model cache entries.
+            try {
+                clearRequestScopedCache(request);
+            } catch (Exception e) {
+                // Log but don't fail the build due to cache cleanup issues
+                logger.debug("Failed to clear REQUEST_SCOPED cache for raw model request: {}", request, e);
+            }
+            RequestTraceHelper.exit(trace);
+        }
+    }
+
+    private SourceResponse<ModelOperationRequest, Model> doBuildRawModel(ModelOperationRequest operation) {
+        ModelBuilderSessionState build = new ModelBuilderSessionState(operation.modelRequest());
+        Model model = build.readRawModel();
+        if (build.hasErrors()) {
+            throw build.newModelBuilderException();
+        }
+        return new SourceResponse<>(operation, model);
+    }
+
+    enum ModelOperation {
+        VALIDATE,
+        RAW_MODEL
+    }
+
+    record ModelOperationRequest(ModelBuilderRequest modelRequest, ModelOperation operation, RequestTrace trace)
+            implements Request<Session>, CacheMetadata {
+        @Override
+        public Session getSession() {
+            return modelRequest.getSession();
+        }
+
+        @Override
+        public RequestTrace getTrace() {
+            return trace;
+        }
+
+        @Override
+        public CacheRetention getCacheRetention() {
+            return CacheRetention.DISABLED;
+        }
+    }
+
+    static String getGroupId(Model model) {
+        String groupId = model.getGroupId();
+        if (groupId == null && model.getParent() != null) {
+            groupId = model.getParent().getGroupId();
+        }
+        return groupId;
+    }
+
+    static String getVersion(Model model) {
+        String version = model.getVersion();
+        if (version == null && model.getParent() != null) {
+            version = model.getParent().getVersion();
+        }
+        return version;
+    }
+
+    /**
+     * Whether the model this request builds was resolved from a repository rather than supplied to
+     * Maven. {@link org.apache.maven.api.services.Sources#resolvedSource} carries the resolved
+     * model's coordinates and is the only source kind that does; a POM built from a file the caller
+     * pointed at reports none.
+     */
+    static boolean isExternalOrigin(ModelBuilderRequest request) {
+        return request.getRequestType() == ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY
+                && request.getSource() != null
+                && request.getSource().getModelId() != null;
+    }
+
+    static boolean usesSystemScope(Dependency dependency) {
+        return "system".equals(dependency.getScope())
+                || (dependency.getSystemPath() != null
+                        && !dependency.getSystemPath().isEmpty());
+    }
+
+    private DefaultProfileActivationContext getProfileActivationContext(ModelBuilderRequest request, Model model) {
+        return new DefaultProfileActivationContext(
+                rootLocator,
+                interpolator,
+                request.getActiveProfileIds(),
+                request.getInactiveProfileIds(),
+                request.getSystemProperties(),
+                request.getUserProperties(),
+                model);
+    }
+
+    private List<Activation> getProfileActivations(Model model) {
+        return model.getProfiles().stream().map(Profile::getActivation).collect(Collectors.toList());
+    }
+
+    private Model injectProfileActivations(Model model, List<Activation> activations) {
+        List<Profile> profiles = new ArrayList<>();
+        boolean modified = false;
+        for (int i = 0; i < model.getProfiles().size(); i++) {
+            Profile profile = model.getProfiles().get(i);
+            Activation activation = profile.getActivation();
+            if (activation != null) {
+                // restore activation
+                profile = profile.withActivation(activations.get(i));
+                modified = true;
+            }
+            profiles.add(profile);
+        }
+        return modified ? model.withProfiles(profiles) : model;
+    }
+
+    private Model interpolateModel(Model model, ModelBuilderRequest request, ModelProblemCollector problems) {
+        Model interpolatedModel =
+                modelInterpolator.interpolateModel(model, model.getProjectDirectory(), request, problems);
+        if (interpolatedModel.getParent() != null) {
+            Map<String, String> map1 = request.getSession().getUserProperties();
+            Map<String, String> map2 = model.getProperties();
+            Map<String, String> map3 = request.getSession().getSystemProperties();
+            UnaryOperator<String> cb = Interpolator.chain(map1::get, map2::get, map3::get);
+            try {
+                String interpolated =
+                        interpolator.interpolate(interpolatedModel.getParent().getVersion(), cb);
+                interpolatedModel = interpolatedModel.withParent(
+                        interpolatedModel.getParent().withVersion(interpolated));
+            } catch (Exception e) {
+                problems.add(
+                        Severity.ERROR,
+                        Version.BASE,
+                        "Failed to interpolate field: "
+                                + interpolatedModel.getParent().getVersion()
+                                + " on class: ",
+                        e);
+            }
+        }
+        interpolatedModel = interpolatedModel.withPomFile(model.getPomFile());
+        return interpolatedModel;
+    }
+
+    private boolean rawChildVersionReferencesParent(String rawChildModelVersion) {
+        return rawChildModelVersion.equals("${pom.version}")
+                || rawChildModelVersion.equals("${project.version}")
+                || rawChildModelVersion.equals("${pom.parent.version}")
+                || rawChildModelVersion.equals("${project.parent.version}");
+    }
+
+    private Model getSuperModel(String modelVersion) {
+        return superPomProvider.getSuperPom(modelVersion);
+    }
+
+    private static org.apache.maven.api.model.Dependency addExclusions(
+            org.apache.maven.api.model.Dependency candidate, List<Exclusion> exclusions) {
+        return candidate.withExclusions(Stream.concat(candidate.getExclusions().stream(), exclusions.stream())
+                .toList());
+    }
+
+    private boolean match(Exclusion exclusion, Dependency candidate) {
+        return match(exclusion.getGroupId(), candidate.getGroupId())
+                && match(exclusion.getArtifactId(), candidate.getArtifactId());
+    }
+
+    private boolean match(String match, String text) {
+        return match.equals("*") || match.equals(text);
+    }
+
+    private boolean containsCoordinates(String message, String groupId, String artifactId, String version) {
+        return message != null
+                && (groupId == null || message.contains(groupId))
+                && (artifactId == null || message.contains(artifactId))
+                && (version == null || message.contains(version));
+    }
+
+    record GAKey(String groupId, String artifactId) {}
+
+    /**
+     * Composite key used to deduplicate BOM import conflict warnings within a single top-level build.
+     * Two warnings are considered duplicates when they share the same message text and originate
+     * from the same source location (file, model ID, line, and column).
+     */
+    private record ImportWarningKey(
+            String message, String sourceLocation, String sourceModelId, int lineNumber, int columnNumber) {}
+
+    public record RgavCacheKey(
+            Session session,
+            RequestTrace trace,
+            List<RemoteRepository> repositories,
+            String groupId,
+            String artifactId,
+            String version,
+            String classifier,
+            String tag)
+            implements Request<Session> {
+        @Nonnull
+        @Override
+        public Session getSession() {
+            return session;
+        }
+
+        @Nullable
+        @Override
+        public RequestTrace getTrace() {
+            return trace;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof RgavCacheKey that
+                    && Objects.equals(tag, that.tag)
+                    && Objects.equals(groupId, that.groupId)
+                    && Objects.equals(version, that.version)
+                    && Objects.equals(artifactId, that.artifactId)
+                    && Objects.equals(classifier, that.classifier)
+                    && Objects.equals(repositories, that.repositories);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(repositories, groupId, artifactId, version, classifier, tag);
+        }
+
+        @Override
+        public String toString() {
+            StringBuilder sb = new StringBuilder();
+            sb.append(getClass().getSimpleName()).append("[").append("gav='");
+            if (groupId != null) {
+                sb.append(groupId);
+            }
+            sb.append(":");
+            if (artifactId != null) {
+                sb.append(artifactId);
+            }
+            sb.append(":");
+            if (version != null) {
+                sb.append(version);
+            }
+            sb.append(":");
+            if (classifier != null) {
+                sb.append(classifier);
+            }
+            sb.append("', tag='");
+            sb.append(tag);
+            sb.append("']");
+            return sb.toString();
+        }
+    }
+
+    public record SourceCacheKey(Session session, RequestTrace trace, Source source, String tag)
+            implements Request<Session>, CacheMetadata {
+        @Nonnull
+        @Override
+        public Session getSession() {
+            return session;
+        }
+
+        @Nullable
+        @Override
+        public RequestTrace getTrace() {
+            return trace;
+        }
+
+        @Override
+        public CacheRetention getCacheRetention() {
+            return source instanceof CacheMetadata cacheMetadata
+                    ? cacheMetadata.getCacheRetention()
+                    : CacheRetention.REQUEST_SCOPED;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof SourceCacheKey that
+                    && Objects.equals(tag, that.tag)
+                    && Objects.equals(source, that.source);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(source, tag);
+        }
+
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() + "[" + "location=" + source.getLocation() + ", tag=" + tag + ", path="
+                    + source.getPath() + ']';
+        }
+    }
+
+    public static class SourceResponse<R extends Request<?>, T> implements Result<R> {
+        private final R request;
+        private final T response;
+
+        SourceResponse(R request, T response) {
+            this.request = request;
+            this.response = response;
+        }
+
+        @Nonnull
+        @Override
+        public R getRequest() {
+            return request;
+        }
+    }
+
+    /**
+     * Clears operation results from the outer request's cache while preserving
+     * {@link RgavCacheKey} and {@link SourceCacheKey} entries used by internal model caches.
+     *
+     * @param req the request whose enclosing cache should be cleaned
+     * @param <REQ> the request type
+     */
+    private <REQ extends Request<?>> void clearRequestScopedCache(REQ req) {
+        if (req.getSession() instanceof Session session) {
+            // Use the same key as DefaultRequestCache
+            SessionData.Key<Cache> key = SessionData.key(Cache.class, CacheMetadata.class);
+
+            // Locate the outer request represented by the request's explicit trace ancestry.
+            Object outerRequestKey = getOuterRequest(req);
+
+            Cache<Object, Object> caches = session.getData().get(key);
+            if (caches != null) {
+                Object removedCache = caches.get(outerRequestKey);
+                if (removedCache instanceof Cache<?, ?> map) {
+                    int beforeSize = map.size();
+                    map.removeIf((k, v) -> !(k instanceof RgavCacheKey) && !(k instanceof SourceCacheKey));
+                    int afterSize = map.size();
+                    if (logger.isDebugEnabled()) {
+                        logger.debug(
+                                "Cleared REQUEST_SCOPED cache for request: {}, removed {} entries, remaining entries: {}",
+                                outerRequestKey.getClass().getSimpleName(),
+                                afterSize - beforeSize,
+                                afterSize);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Gets the outer request represented by the request's explicit trace ancestry.
+     */
+    private Object getOuterRequest(Request<?> req) {
+        RequestTrace trace = req.getTrace();
+        if (trace != null) {
+            RequestTrace parent = trace.parent();
+            if (parent != null && parent.data() instanceof Request<?> parentRequest) {
+                return getOuterRequest(parentRequest);
+            }
+        }
+        return req;
+    }
+
+    private static <T, A> List<T> map(List<T> resources, BiFunction<T, A, T> mapper, A argument) {
+        List<T> newResources = null;
+        if (resources != null) {
+            for (int i = 0; i < resources.size(); i++) {
+                T resource = resources.get(i);
+                T newResource = mapper.apply(resource, argument);
+                if (newResource != resource) {
+                    if (newResources == null) {
+                        newResources = new ArrayList<>(resources);
+                    }
+                    newResources.set(i, newResource);
+                }
+            }
+        }
+        return newResources;
+    }
+
+    /**
+     * Checks if the parent POM path is within the root directory.
+     * This prevents invalid setups where a parent POM is located above the root directory.
+     *
+     * @param parentPath the path to the parent POM
+     * @param rootDirectory the root directory
+     * @return true if the parent is within the root directory, false otherwise
+     */
+    private static boolean isParentWithinRootDirectory(Path parentPath, Path rootDirectory) {
+        if (parentPath == null || rootDirectory == null) {
+            return true; // Allow if either is null (fallback behavior)
+        }
+
+        try {
+            Path normalizedParent = parentPath.toAbsolutePath().normalize();
+            Path normalizedRoot = rootDirectory.toAbsolutePath().normalize();
+
+            // Check if the parent path starts with the root directory path
+            return normalizedParent.startsWith(normalizedRoot);
+        } catch (Exception e) {
+            // If there's any issue with path resolution, allow it (fallback behavior)
+            return true;
+        }
+    }
+}

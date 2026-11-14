@@ -1,0 +1,107 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.Properties;
+
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+/**
+ * This is a test set for <a href="https://issues.apache.org/jira/browse/MNG-6255">MNG-6255</a>:
+ * Check that the <code>.mvn/jvm.config</code> file contents are concatenated properly, no matter
+ * what line endings are used.
+ * @since 3.5.3
+ *
+ */
+class MavenITmng6255FixConcatLines extends AbstractMavenIntegrationTestCase {
+
+    /**
+     * Check that <code>CR</code> line endings work.
+     * <p>
+     * Currently disabled.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    @Disabled
+    void testJvmConfigFileCR() throws Exception {
+        runWithLineEndings("\r", "cr");
+    }
+
+    /**
+     * Check that <code>LF</code> line endings work.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    void testJvmConfigFileLF() throws Exception {
+        runWithLineEndings("\n", "lf");
+    }
+
+    /**
+     * Check that <code>CRLF</code> line endings work.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    void testJvmConfigFileCRLF() throws Exception {
+        runWithLineEndings("\r\n", "crlf");
+    }
+
+    protected void runWithLineEndings(String lineEndings, String test) throws Exception {
+        // Each line-ending variant gets its own copy of the test project so that
+        // concurrent or sequential test variants do not overwrite each other's jvm.config.
+        Path sharedDir = extractResources("mng-6255");
+        Path baseDir = sharedDir.resolveSibling("mng-6255-" + test);
+        Files.createDirectories(baseDir);
+
+        // Copy pom.xml from the shared resource directory populated during test-resources phase
+        Path pom = sharedDir.resolve("pom.xml");
+        Files.copy(pom, baseDir.resolve("pom.xml"), StandardCopyOption.REPLACE_EXISTING);
+
+        Path mvnDir = baseDir.resolve(".mvn");
+        Files.createDirectories(mvnDir);
+
+        Path jvmConfig = mvnDir.resolve("jvm.config");
+        createJvmConfigFile(jvmConfig, lineEndings, "-Djvm.config=ok", "-Xms256m", "-Xmx512m");
+
+        Verifier verifier = newVerifier(baseDir);
+        verifier.setLogFileName("log-" + test + ".txt");
+        verifier.addCliArgument("-Dexpression.outputFile="
+                + baseDir.resolve("expression-" + test + ".properties").toAbsolutePath());
+        verifier.setForkJvm(true); // custom .mvn/jvm.config
+        verifier.addCliArgument("validate");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+
+        Properties props = verifier.loadProperties("expression-" + test + ".properties");
+        assertEquals("ok", props.getProperty("project.properties.jvm-config"));
+    }
+
+    protected void createJvmConfigFile(Path jvmConfig, String lineEndings, String... lines) throws Exception {
+        String content = String.join(lineEndings, lines);
+        Files.writeString(jvmConfig, content);
+    }
+}

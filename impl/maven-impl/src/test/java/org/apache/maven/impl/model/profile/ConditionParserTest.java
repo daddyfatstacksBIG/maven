@@ -1,0 +1,500 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.impl.model.profile;
+
+import java.util.Locale;
+import java.util.Map;
+import java.util.function.UnaryOperator;
+
+import org.apache.maven.api.model.Model;
+import org.apache.maven.api.services.model.ProfileActivationContext;
+import org.apache.maven.impl.DefaultModelVersionParser;
+import org.apache.maven.impl.DefaultVersionParser;
+import org.apache.maven.impl.model.DefaultInterpolator;
+import org.apache.maven.impl.model.DefaultProfileActivationContext;
+import org.apache.maven.impl.model.profile.ConditionParser.ExpressionFunction;
+import org.eclipse.aether.util.version.GenericVersionScheme;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class ConditionParserTest {
+    ConditionParser parser;
+    Map<String, ExpressionFunction> functions;
+    UnaryOperator<String> propertyResolver;
+
+    @BeforeEach
+    void setUp() {
+        ProfileActivationContext context = createMockContext();
+        DefaultVersionParser versionParser =
+                new DefaultVersionParser(new DefaultModelVersionParser(new GenericVersionScheme()));
+
+        ConditionProfileActivator activator = new ConditionProfileActivator(versionParser, new DefaultInterpolator());
+        functions = activator.registerFunctions(context, versionParser);
+        propertyResolver = s -> activator.property(null, context, s);
+        parser = new ConditionParser(functions, propertyResolver);
+    }
+
+    private ProfileActivationContext createMockContext() {
+        DefaultProfileActivationContext context = new DefaultProfileActivationContext(
+                new AbstractProfileActivatorTest.FakeRootLocator(), new DefaultInterpolator());
+        context.setSystemProperties(Map.of(
+                "os.name", "windows",
+                "os.arch", "amd64",
+                "os.version", "10.0",
+                "java.version", "1.8.0_292"));
+        context.setModel(Model.newInstance());
+        return context;
+    }
+
+    @Test
+    void testStringLiterals() {
+        assertEquals("Hello, World!", parser.parse("'Hello, World!'"));
+        assertEquals("Hello, World!", parser.parse("\"Hello, World!\""));
+    }
+
+    @Test
+    void testStringConcatenation() {
+        assertEquals("HelloWorld", parser.parse("'Hello' + 'World'"));
+        assertEquals("Hello123", parser.parse("'Hello' + 123"));
+    }
+
+    @Test
+    void testLengthFunction() {
+        assertEquals(13, parser.parse("length('Hello, World!')"));
+        assertEquals(5, parser.parse("length(\"Hello\")"));
+    }
+
+    @Test
+    void testCaseConversionFunctions() {
+        assertEquals("HELLO", parser.parse("upper('hello')"));
+        assertEquals("world", parser.parse("lower('WORLD')"));
+    }
+
+    /**
+     * The result of {@code upper()} and {@code lower()} must not depend on the default locale of
+     * the machine running the build. In the Turkish locale the default case mapping turns
+     * {@code i} into the dotted {@code İ} and {@code I} into the dotless {@code ı}, which would
+     * silently change whether a profile is activated.
+     */
+    @Test
+    void testCaseConversionFunctionsAreLocaleIndependent() {
+        Locale orig = Locale.getDefault();
+        try {
+            Locale[] locales = {Locale.ENGLISH, new Locale("tr")};
+            for (Locale locale : locales) {
+                Locale.setDefault(locale);
+                assertEquals("WINDOWS", parser.parse("upper('windows')"), "upper() in " + locale);
+                assertEquals("LINUX", parser.parse("upper('linux')"), "upper() in " + locale);
+                assertEquals("linux", parser.parse("lower('LINUX')"), "lower() in " + locale);
+                assertEquals("ci", parser.parse("lower('CI')"), "lower() in " + locale);
+            }
+        } finally {
+            Locale.setDefault(orig);
+        }
+    }
+
+    /**
+     * Numbers must render with latin digits regardless of the default locale, otherwise a
+     * condition comparing against a string literal would evaluate differently on a machine
+     * whose locale uses a non-latin numbering system.
+     */
+    @Test
+    void testNumberFormattingIsLocaleIndependent() {
+        Locale orig = Locale.getDefault();
+        try {
+            // this locale's default numbering system is Devanagari rather than latin
+            Locale.setDefault(Locale.forLanguageTag("hi-IN-u-nu-deva"));
+            assertEquals("42", ConditionParser.toString(42.0));
+            assertEquals("42", ConditionParser.toString(42.0f));
+            assertEquals("The answer is 42", parser.parse("'The answer is ' + 42.0"));
+            assertEquals(2, parser.parse("length(42.0)"));
+        } finally {
+            Locale.setDefault(orig);
+        }
+    }
+
+    @Test
+    void testConcatFunction() {
+        assertEquals("HelloWorld", parser.parse("'Hello' + 'World'"));
+        assertEquals("The answer is 42", parser.parse("'The answer is ' + 42"));
+        assertEquals("The answer is 42", parser.parse("'The answer is ' + 42.0"));
+        assertEquals("The answer is 42", parser.parse("'The answer is ' + 42.0f"));
+        assertEquals("Pi is approximately 3.14", parser.parse("'Pi is approximately ' + 3.14"));
+        assertEquals("Pi is approximately 3.14", parser.parse("'Pi is approximately ' + 3.14f"));
+    }
+
+    @Test
+    void testToString() {
+        assertEquals("42", ConditionParser.toString(42));
+        assertEquals("42", ConditionParser.toString(42L));
+        assertEquals("42", ConditionParser.toString(42.0));
+        assertEquals("42", ConditionParser.toString(42.0f));
+        assertEquals("3.14", ConditionParser.toString(3.14));
+        assertEquals("3.14", ConditionParser.toString(3.14f));
+        assertEquals("true", ConditionParser.toString(true));
+        assertEquals("false", ConditionParser.toString(false));
+        assertEquals("hello", ConditionParser.toString("hello"));
+    }
+
+    @Test
+    void testSubstringFunction() {
+        assertEquals("World", parser.parse("substring('Hello, World!', 7, 12)"));
+        assertEquals("World!", parser.parse("substring('Hello, World!', 7)"));
+    }
+
+    @Test
+    void testIndexOf() {
+        assertEquals(7, parser.parse("indexOf('Hello, World!', 'World')"));
+        assertEquals(-1, parser.parse("indexOf('Hello, World!', 'OpenAI')"));
+    }
+
+    @Test
+    void testInRange() {
+        assertTrue((Boolean) parser.parse("inrange('1.8.0_292', '[1.8,2.0)')"));
+        assertFalse((Boolean) parser.parse("inrange('1.7.0', '[1.8,2.0)')"));
+    }
+
+    @Test
+    void testIfFunction() {
+        assertEquals("long", parser.parse("if(length('test') > 3, 'long', 'short')"));
+        assertEquals("short", parser.parse("if(length('hi') > 3, 'long', 'short')"));
+    }
+
+    /**
+     * Only the selected branch of {@code if(..)} is evaluated. The other one may not be valid for
+     * the current input, as in the example from the {@code condition} documentation: with a
+     * {@code java.version} that has no {@code -}, the unselected {@code substring(..)} would get an
+     * end index of -1.
+     */
+    @Test
+    void testIfFunctionOnlyEvaluatesSelectedBranch() {
+        assertEquals(
+                "1.8.0_292",
+                parser.parse("if(contains(${java.version}, '-'), "
+                        + "substring(${java.version}, 0, indexOf(${java.version}, '-')), ${java.version})"));
+        assertEquals(
+                "21",
+                parser.parse("if(contains('21-ea', '-'), substring('21-ea', 0, indexOf('21-ea', '-')), '21-ea')"));
+        assertThrows(RuntimeException.class, () -> parser.parse("if(true, 'a')"));
+        assertThrows(RuntimeException.class, () -> parser.parse("if(false, 'a')"));
+        assertThrows(RuntimeException.class, () -> parser.parse("if(false, substring('a', 0, 5), 'b'"));
+    }
+
+    /**
+     * {@code &&} and {@code ||} do not evaluate their right operand when the left one already decides
+     * the result, so a guard such as {@code length(..) >= 3} can protect the call that follows it.
+     */
+    @Test
+    void testLogicalOperatorsShortCircuit() {
+        assertFalse((Boolean) parser.parse("length('ab') >= 3 && substring('ab', 0, 3) == 'abc'"));
+        assertTrue((Boolean) parser.parse("length('ab') < 3 || substring('ab', 0, 3) == 'abc'"));
+        assertTrue((Boolean) parser.parse("false && substring('ab', 0, 3) == 'abc' || true"));
+        assertFalse((Boolean) parser.parse("false && (substring('ab', 0, 3) == 'abc' || true) && true"));
+        assertTrue((Boolean) parser.parse("true && (false || substring('abc', 0, 3) == 'abc')"));
+        assertThrows(RuntimeException.class, () -> parser.parse("false &&"));
+        assertThrows(RuntimeException.class, () -> parser.parse("true || (false"));
+    }
+
+    @Test
+    void testContainsFunction() {
+        assertTrue((Boolean) parser.parse("contains('Hello, World!', 'World')"));
+        assertFalse((Boolean) parser.parse("contains('Hello, World!', 'OpenAI')"));
+    }
+
+    @Test
+    void testMatchesFunction() {
+        assertTrue((Boolean) parser.parse("matches('test123', '\\w+')"));
+        assertFalse((Boolean) parser.parse("matches('test123', '\\d+')"));
+    }
+
+    @Test
+    void testComplexExpression() {
+        String expression = "if(contains(lower('HELLO WORLD'), 'hello'), upper('success') + '!', 'failure')";
+        assertEquals("SUCCESS!", parser.parse(expression));
+    }
+
+    /**
+     * The tokenizer emits a bare {@code !} token, so the parser has to be able to consume it.
+     * The {@code contains(..)} cases also cover a {@code !} inside a string literal, which the
+     * tokenizer must leave alone.
+     */
+    @Test
+    void testLogicalNotOperator() {
+        assertFalse((Boolean) parser.parse("!true"));
+        assertTrue((Boolean) parser.parse("!false"));
+        assertTrue((Boolean) parser.parse("!!true"));
+        assertFalse((Boolean) parser.parse("!!!true"));
+        assertTrue((Boolean) parser.parse("!contains('Hello, World!', 'OpenAI')"));
+        assertFalse((Boolean) parser.parse("!contains('Hello, World!', 'World')"));
+    }
+
+    /**
+     * {@code !x} is sugar for the {@code not(x)} function and must agree with it.
+     */
+    @Test
+    void testLogicalNotOperatorMatchesNotFunction() {
+        assertEquals(
+                parser.parse("not(contains('Hello, World!', 'OpenAI'))"),
+                parser.parse("!contains('Hello, World!', 'OpenAI')"));
+        assertEquals(
+                parser.parse("not(contains('Hello, World!', 'World'))"),
+                parser.parse("!contains('Hello, World!', 'World')"));
+        assertEquals(parser.parse("not(true)"), parser.parse("!true"));
+    }
+
+    /**
+     * {@code !} binds tighter than comparison and the logical operators, as it does in Java.
+     */
+    @Test
+    void testLogicalNotOperatorPrecedence() {
+        assertTrue((Boolean) parser.parse("!false && true"));
+        assertFalse((Boolean) parser.parse("!true && false"));
+        assertTrue((Boolean) parser.parse("!true || true"));
+        assertTrue((Boolean) parser.parse("!(true && false)"));
+        assertTrue((Boolean) parser.parse("!(1 > 2)"));
+        assertFalse((Boolean) parser.parse("!('a' != 'b')"));
+    }
+
+    /**
+     * Coercion of non-boolean operands must match what the {@code not()} function does.
+     */
+    @Test
+    void testLogicalNotOperatorCoercion() {
+        assertFalse((Boolean) parser.parse("!'abc'"));
+        assertTrue((Boolean) parser.parse("!''"));
+        assertFalse((Boolean) parser.parse("!length('ab')"));
+        assertTrue((Boolean) parser.parse("!0"));
+        assertFalse((Boolean) parser.parse("!1"));
+    }
+
+    /**
+     * A bare {@code !} must not disturb the {@code !=} operator, which the tokenizer emits as a
+     * single token.
+     */
+    @Test
+    void testNotEqualsStillParsesAsOneOperator() {
+        assertTrue((Boolean) parser.parse("1 != 2"));
+        assertFalse((Boolean) parser.parse("'abc' != 'abc'"));
+        assertTrue((Boolean) parser.parse("'abc' != 'cdf'"));
+    }
+
+    @Test
+    void testStringComparison() {
+        assertTrue((Boolean) parser.parse("'abc' != 'cdf'"));
+        assertFalse((Boolean) parser.parse("'abc' != 'abc'"));
+        assertTrue((Boolean) parser.parse("'abc' == 'abc'"));
+        assertFalse((Boolean) parser.parse("'abc' == 'cdf'"));
+    }
+
+    @Test
+    void testParenthesesMismatch() {
+        functions.put("property", args -> "foo");
+        functions.put("inrange", args -> false);
+        assertThrows(
+                RuntimeException.class,
+                () -> parser.parse(
+                        "property('os.name') == 'windows' && property('os.arch') != 'amd64') && inrange(property('os.version'), '[99,)')"),
+                "Should throw RuntimeException due to parentheses mismatch");
+
+        assertThrows(
+                RuntimeException.class,
+                () -> parser.parse(
+                        "(property('os.name') == 'windows' && property('os.arch') != 'amd64') && inrange(property('os.version'), '[99,)'"),
+                "Should throw RuntimeException due to parentheses mismatch");
+
+        // This should not throw an exception if parentheses are balanced and properties are handled correctly
+        assertDoesNotThrow(
+                () -> parser.parse(
+                        "(property('os.name') == 'windows' && property('os.arch') != 'amd64') && inrange(property('os.version'), '[99,)')"));
+    }
+
+    @Test
+    void testBasicArithmetic() {
+        assertEquals(5.0, parser.parse("2 + 3"));
+        assertEquals(10.0, parser.parse("15 - 5"));
+        assertEquals(24.0, parser.parse("6 * 4"));
+        assertEquals(3.0, parser.parse("9 / 3"));
+    }
+
+    @Test
+    void testArithmeticPrecedence() {
+        assertEquals(14.0, parser.parse("2 + 3 * 4"));
+        assertEquals(20.0, parser.parse("(2 + 3) * 4"));
+        assertEquals(11.0, parser.parse("15 - 6 + 2"));
+        assertEquals(10.0, parser.parse("10 / 2 + 2 * 2.5"));
+    }
+
+    @Test
+    void testFloatingPointArithmetic() {
+        assertEquals(5.5, parser.parse("2.2 + 3.3"));
+        assertEquals(0.1, (Double) parser.parse("3.3 - 3.2"), 1e-10);
+        assertEquals(6.25, parser.parse("2.5 * 2.5"));
+        assertEquals(2.5, parser.parse("5 / 2"));
+    }
+
+    @Test
+    void testArithmeticComparisons() {
+        assertTrue((Boolean) parser.parse("5 > 3"));
+        assertTrue((Boolean) parser.parse("3 < 5"));
+        assertTrue((Boolean) parser.parse("5 >= 5"));
+        assertTrue((Boolean) parser.parse("3 <= 3"));
+        assertTrue((Boolean) parser.parse("5 == 5"));
+        assertTrue((Boolean) parser.parse("5 != 3"));
+        assertFalse((Boolean) parser.parse("5 < 3"));
+        assertFalse((Boolean) parser.parse("3 > 5"));
+        assertFalse((Boolean) parser.parse("5 != 5"));
+    }
+
+    @Test
+    void testComplexArithmeticExpressions() {
+        assertFalse((Boolean) parser.parse("(2 + 3 * 4) > (10 + 5)"));
+        assertTrue((Boolean) parser.parse("(2 + 3 * 4) < (10 + 5)"));
+        assertTrue((Boolean) parser.parse("(10 / 2 + 3) == 8"));
+        assertTrue((Boolean) parser.parse("(10 / 2 + 3) != 9"));
+    }
+
+    @Test
+    void testArithmeticFunctions() {
+        assertEquals(5.0, parser.parse("2 + 3"));
+        assertEquals(2.0, parser.parse("5 - 3"));
+        assertEquals(15.0, parser.parse("3 * 5"));
+        assertEquals(2.5, parser.parse("5 / 2"));
+    }
+
+    @Test
+    void testArithmeticWithoutSpaces() {
+        assertEquals(5.0, parser.parse("2+3"));
+        assertEquals(10.0, parser.parse("15-5"));
+        assertEquals(24.0, parser.parse("6*4"));
+        assertEquals(3.0, parser.parse("9/3"));
+        assertEquals(14.0, parser.parse("2+3*4"));
+        assertEquals(20.0, parser.parse("(2+3)*4"));
+        assertEquals(-5.0, parser.parse("-5"));
+        assertEquals(-5.0, parser.parse("-(2+3)"));
+    }
+
+    @Test
+    void testCombinedArithmeticAndLogic() {
+        assertTrue((Boolean) parser.parse("(5 > 3) && (10 / 2 == 5)"));
+        assertFalse((Boolean) parser.parse("(5 < 3) || (10 / 2 != 5)"));
+        assertTrue((Boolean) parser.parse("2 + 3 == 1 * 5"));
+    }
+
+    @Test
+    void testDivisionByZero() {
+        assertThrows(ArithmeticException.class, () -> parser.parse("5 / 0"));
+    }
+
+    @Test
+    void testPropertyAlias() {
+        assertTrue((Boolean) parser.parse("${os.name} == 'windows'"));
+        assertFalse((Boolean) parser.parse("${os.name} == 'linux'"));
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64' && ${os.name} == 'windows'"));
+        assertThrows(RuntimeException.class, () -> parser.parse("${unclosed"));
+    }
+
+    @Test
+    void testAmpersandAmpersandTokenizerMultiline() {
+        // Regression test for https://github.com/apache/maven/issues/11882
+        // The && operator was not being tokenized correctly when a line break appeared before it.
+        // Uses ${os.name} and ${os.arch} which are set to 'windows' and 'amd64' in the mock context.
+
+        // Case 1: Basic && without line breaks (baseline - always worked)
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64' && ${os.name} == 'windows'"));
+
+        // Case 2: Line break BEFORE && - this was the bug from issue #11882
+        // In the issue, CDATA content had a line break before &&:
+        // <condition><![CDATA[exists( '.profile-2' )\n&& missing( '.profile-1' )]]></condition>
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64'\n&& ${os.name} == 'windows'"));
+
+        // Case 3: Line break AFTER &&
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64' &&\n${os.name} == 'windows'"));
+
+        // Case 4: Line breaks on both sides
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64'\n&&\n${os.name} == 'windows'"));
+
+        // Case 5: Multiple && with line break before first && (like bad-profile-2d in issue)
+        assertTrue(
+                (Boolean) parser.parse("${os.arch} == 'amd64'\n&& ${os.name} == 'windows' && ${os.name} == 'windows'"));
+    }
+
+    @Test
+    void testPipePipeTokenizerMultiline() {
+        // Regression test for https://github.com/apache/maven/issues/11882
+        // The || operator was not being tokenized correctly when a line break appeared before it.
+        // Uses ${os.name} which is set to 'windows' in the mock context.
+
+        // Case 1: Basic || without line breaks (baseline)
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64' || ${os.name} == 'windows'"));
+
+        // Case 2: Line break BEFORE ||
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64'\n|| ${os.name} == 'windows'"));
+
+        // Case 3: Line break AFTER ||
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64' ||\n${os.name} == 'windows'"));
+
+        // Case 4: Line breaks on both sides
+        assertTrue((Boolean) parser.parse("${os.arch} == 'amd64'\n||\n${os.name} == 'windows'"));
+
+        // Case 5: Mixed && and || with line breaks
+        assertTrue(
+                (Boolean) parser.parse("${os.arch} == 'amd64'\n&& ${os.name} == 'windows' || ${os.name} == 'windows'"));
+    }
+
+    @Test
+    void testNestedPropertyAlias() {
+        functions.put("property", args -> {
+            if (args.get(0).equals("project.rootDirectory")) {
+                return "/home/user/project";
+            }
+            return null;
+        });
+        functions.put("exists", args -> true); // Mock implementation
+
+        Object result = parser.parse("exists('${project.rootDirectory}/someFile.txt')");
+        assertTrue((Boolean) result);
+
+        result = parser.parse("exists('${project.rootDirectory}/${nested.property}/someFile.txt')");
+        assertTrue((Boolean) result);
+
+        assertDoesNotThrow(() -> parser.parse("property('')"));
+    }
+
+    @Test
+    void testToInt() {
+        assertEquals(123, ConditionParser.toInt(123));
+        assertEquals(123, ConditionParser.toInt(123L));
+        assertEquals(123, ConditionParser.toInt(123.0));
+        assertEquals(123, ConditionParser.toInt(123.5)); // This will truncate the decimal part
+        assertEquals(123, ConditionParser.toInt("123"));
+        assertEquals(123, ConditionParser.toInt("123.0"));
+        assertEquals(123, ConditionParser.toInt("123.5")); // This will truncate the decimal part
+        assertEquals(1, ConditionParser.toInt(true));
+        assertEquals(0, ConditionParser.toInt(false));
+
+        assertThrows(RuntimeException.class, () -> ConditionParser.toInt("not a number"));
+        assertThrows(RuntimeException.class, () -> ConditionParser.toInt(new Object()));
+    }
+}

@@ -1,0 +1,15 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+  <activeProfiles>
+    <activeProfile>test-profile</activeProfile>
+  </activeProfiles>
+
+  <profiles>
+    <profile>
+      <id>test-profile</id>
+
+      <properties>
+        <test>test.txt</test>
+      </properties>
+    </profile>
+  </profiles>
+</settings>

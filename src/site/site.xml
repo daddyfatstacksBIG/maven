@@ -19,17 +19,9 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<project xmlns="http://maven.apache.org/DECORATION/1.8.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/DECORATION/1.8.0 http://maven.apache.org/xsd/decoration-1.8.0.xsd"
+<site xmlns="http://maven.apache.org/SITE/2.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/SITE/2.0.0 https://maven.apache.org/xsd/site-2.0.0.xsd"
   name="Apache Maven">
-
-  <bannerLeft>
-    <name>${project.name}</name>
-    <src>https://maven.apache.org/images/apache-maven-project.png</src>
-    <href>https://maven.apache.org/</href>
-  </bannerLeft>
-
-  <edit>${project.scm.url}</edit>
 
   <body>
     <breadcrumbs>
@@ -39,32 +31,42 @@ under the License.
 
     <menu name="Overview">
       <item name="Introduction" href="index.html"/>
-      <item name="JavaDocs" href="apidocs/index.html"/>
+      <item name="Javadocs" href="apidocs/index.html"/>
       <item name="Source Xref" href="xref/index.html"/>
-      <!--item name="FAQ" href="faq.html"/-->
-      <item name="License" href="http://www.apache.org/licenses/"/>
-      <item name="Download" href="/download.html"/>
+      <item name="License" href="https://www.apache.org/licenses/"/>
+      <item name="Download" href="../../download.cgi"/>
     </menu>
 
-    <menu name="Descriptors Reference">
-      <item name="POM" href="./maven-model/maven.html"/>
-      <item name="Settings" href="./maven-settings/settings.html"/>
-      <item name="Toolchains" href="./maven-core/toolchains.html"/>
+    <menu name="User Guide">
+      <item name="Configuring Maven" href="configuring.html"/>
     </menu>
 
-    <menu name="Reference">
-      <item name="Lifecycles" href="./maven-core/lifecycles.html"/>
-      <item name="Plugin Bindings to Default Lifecycle" href="./maven-core/default-bindings.html"/>
-      <item name="Artifact Handlers" href="./maven-core/artifact-handlers.html"/>
-      <item name="CLI options" href="./maven-embedder/cli.html"/>
+    <menu inherit="bottom" name="Descriptors Reference">
+      <item name="POM" href="./api/maven-api-model/maven.html"/>
+      <item name="Settings" href="./api/maven-api-settings/settings.html"/>
+      <item name="Toolchains" href="./api/maven-api-toolchain/toolchains.html"/>
+      <item name="Core Extensions" href="./api/maven-api-cli/core-extensions.html"/>
+      <item name="Repository Metadata" href="./api/maven-api-metadata/repository-metadata.html"/>
+      <item name="Plugin Descriptor" href="./api/maven-api-plugin/plugin.html"/>
+      <item name="Lifecycle Descriptor" href="./api/maven-api-plugin/lifecycle.html"/>
     </menu>
 
-    <menu name="Development">
+    <menu inherit="bottom" name="Reference">
+      <item name="Lifecycles" href="./impl/maven-core/lifecycles.html"/>
+      <item name="Plugin Bindings to Default Lifecycle" href="./impl/maven-core/default-bindings.html"/>
+      <item name="Artifact Handlers" href="./impl/maven-core/artifact-handlers.html"/>
+      <item name="CLI options" href="./compat/maven-embedder/cli.html"/>
+      <item name="Super POM" href="./compat/maven-model-builder/super-pom.html"/>
+      <item name="Maven Configuration" href="./configuration.html"/>
+      <item name="Aggregator Mojos &amp; Lifecycles" href="./aggregator-goals.html"/>
+    </menu>
+
+    <menu inherit="bottom" name="Development">
       <item name="Maven Developer Centre" href="../../developers/index.html"/>
       <item name="Maven Core ITs" href="../../core-its/index.html"/>
     </menu>
 
-    <menu ref="modules"/>
-    <menu ref="reports"/>
+    <menu inherit="bottom" ref="modules"/>
+    <menu inherit="bottom" ref="reports"/>
   </body>
-</project>
+</site>

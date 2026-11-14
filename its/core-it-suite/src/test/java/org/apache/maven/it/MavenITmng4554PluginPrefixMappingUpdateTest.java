@@ -1,0 +1,318 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import org.eclipse.jetty.http.content.HttpContent;
+import org.eclipse.jetty.http.content.ResourceHttpContentFactory;
+import org.eclipse.jetty.io.ByteBufferPool;
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.NetworkConnector;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.handler.DefaultHandler;
+import org.eclipse.jetty.server.handler.ResourceHandler;
+import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * This is a test set for <a href="https://issues.apache.org/jira/browse/MNG-4554">MNG-4554</a>.
+ *
+ * @author Benjamin Bentmann
+ */
+public class MavenITmng4554PluginPrefixMappingUpdateTest extends AbstractMavenIntegrationTestCase {
+
+    /**
+     * Test that the metadata holding the plugin prefix mapping is cached and not redownloaded upon each
+     * Maven invocation.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testitCached() throws Exception {
+        Path testDir = extractResources("mng-4554");
+
+        String metadataUri = "/repo-1/org/apache/maven/its/mng4554/maven-metadata.xml";
+
+        final List<String> requestedUris = Collections.synchronizedList(new ArrayList<>());
+
+        Handler.Abstract logHandler = new Handler.Abstract() {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception {
+                requestedUris.add(Request.getPathInContext(request));
+                return false;
+            }
+        };
+
+        Server server = new Server(0);
+
+        // NOTE: Serve the repository straight off disk. Jetty 12 caches file content by default, but these tests
+        // rewrite the served metadata while the server is running and must not be answered from a stale cache.
+        ResourceHandler repoHandler = new ResourceHandler() {
+            @Override
+            protected HttpContent.Factory newHttpContentFactory(ByteBufferPool.Sized bufferPool) {
+                return new ResourceHttpContentFactory(getBaseResource(), getMimeTypes(), bufferPool);
+            }
+        };
+        repoHandler.setBaseResource(ResourceFactory.of(server).newResource(testDir));
+
+        Handler.Sequence handlerList = new Handler.Sequence();
+        handlerList.addHandler(logHandler);
+        handlerList.addHandler(repoHandler);
+        handlerList.addHandler(new DefaultHandler());
+
+        server.setHandler(handlerList);
+        server.start();
+
+        Verifier verifier = newVerifier(testDir);
+        try {
+            if (server.isFailed()) {
+                fail("Couldn't bind the server socket to a free port!");
+            }
+            verifier.setAutoclean(false);
+            verifier.deleteDirectory("target");
+            try {
+                verifier.deleteArtifacts("org.apache.maven.its.mng4554");
+            } catch (IOException e) {
+                // expected when running test on Windows using embedded Maven (JAR files locked by plugin class realm)
+                assertFalse(Files.exists(verifier.getArtifactMetadataPath(
+                        "org.apache.maven.its.mng4554", null, null, "maven-metadata-mng4554.xml")));
+            }
+            Map<String, String> filterProps = verifier.newDefaultFilterMap();
+            NetworkConnector connector = (NetworkConnector) server.getConnectors()[0];
+            filterProps.put("@port@", Integer.toString(connector.getLocalPort()));
+            filterProps.put("@repo@", "repo-1");
+            verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+            verifier.addCliArgument("-s");
+            verifier.addCliArgument("settings.xml");
+
+            verifier.setLogFileName("log-cached-1.txt");
+            verifier.addCliArgument("a:touch");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            verifier.verifyFilePresent("target/touch.txt");
+            assertTrue(requestedUris.contains(metadataUri), requestedUris.toString());
+
+            requestedUris.clear();
+
+            verifier.setLogFileName("log-cached-2.txt");
+            verifier.addCliArgument("a:touch");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            assertFalse(requestedUris.contains(metadataUri), requestedUris.toString());
+        } finally {
+            server.stop();
+            server.join();
+        }
+    }
+
+    /**
+     * Test that the local metadata holding the plugin prefix mapping can be forcefully updated via the command
+     * line flag -U.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testitForcedUpdate() throws Exception {
+        Path testDir = extractResources("mng-4554");
+
+        String metadataUri = "/repo-1/org/apache/maven/its/mng4554/maven-metadata.xml";
+
+        final List<String> requestedUris = Collections.synchronizedList(new ArrayList<>());
+
+        Handler.Abstract logHandler = new Handler.Abstract() {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception {
+                requestedUris.add(Request.getPathInContext(request));
+                return false;
+            }
+        };
+
+        Server server = new Server(0);
+
+        // NOTE: Serve the repository straight off disk. Jetty 12 caches file content by default, but these tests
+        // rewrite the served metadata while the server is running and must not be answered from a stale cache.
+        ResourceHandler repoHandler = new ResourceHandler() {
+            @Override
+            protected HttpContent.Factory newHttpContentFactory(ByteBufferPool.Sized bufferPool) {
+                return new ResourceHttpContentFactory(getBaseResource(), getMimeTypes(), bufferPool);
+            }
+        };
+        repoHandler.setBaseResource(ResourceFactory.of(server).newResource(testDir));
+
+        Handler.Sequence handlerList = new Handler.Sequence();
+        handlerList.addHandler(logHandler);
+        handlerList.addHandler(repoHandler);
+        handlerList.addHandler(new DefaultHandler());
+
+        server.setHandler(handlerList);
+        server.start();
+
+        Verifier verifier = newVerifier(testDir);
+        try {
+            if (server.isFailed()) {
+                fail("Couldn't bind the server socket to a free port!");
+            }
+            verifier.setAutoclean(false);
+            verifier.deleteDirectory("target");
+            try {
+                verifier.deleteArtifacts("org.apache.maven.its.mng4554");
+            } catch (IOException e) {
+                // expected when running test on Windows using embedded Maven (JAR files locked by plugin class realm)
+                assertFalse(Files.exists(verifier.getArtifactMetadataPath(
+                        "org.apache.maven.its.mng4554", null, null, "maven-metadata-mng4554.xml")));
+            }
+            Map<String, String> filterProps = verifier.newDefaultFilterMap();
+            NetworkConnector connector = (NetworkConnector) server.getConnectors()[0];
+            filterProps.put("@port@", Integer.toString(connector.getLocalPort()));
+            filterProps.put("@repo@", "repo-1");
+            verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+            verifier.addCliArgument("-U");
+            verifier.addCliArgument("-s");
+            verifier.addCliArgument("settings.xml");
+
+            verifier.setLogFileName("log-forced-1.txt");
+            verifier.addCliArgument("a:touch");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            verifier.verifyFilePresent("target/touch.txt");
+            assertTrue(requestedUris.contains(metadataUri), requestedUris.toString());
+
+            requestedUris.clear();
+
+            verifier.setLogFileName("log-forced-2.txt");
+            verifier.addCliArgument("a:touch");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            assertTrue(requestedUris.contains(metadataUri), requestedUris.toString());
+        } finally {
+            server.stop();
+            server.join();
+        }
+    }
+
+    /**
+     * Test that the local metadata holding the plugin prefix mapping is automatically refetched from the remote
+     * repositories if the local metadata fails to resolve a new/other plugin prefix.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testitRefetched() throws Exception {
+        // requiresMavenVersion("[3.0-alpha-3,)");
+
+        Path testDir = extractResources("mng-4554");
+
+        String metadataUri = "/repo-it/org/apache/maven/its/mng4554/maven-metadata.xml";
+
+        final List<String> requestedUris = Collections.synchronizedList(new ArrayList<>());
+
+        Handler.Abstract logHandler = new Handler.Abstract() {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception {
+                requestedUris.add(Request.getPathInContext(request));
+                return false;
+            }
+        };
+
+        Server server = new Server(0);
+
+        // NOTE: Serve the repository straight off disk. Jetty 12 caches file content by default, but these tests
+        // rewrite the served metadata while the server is running and must not be answered from a stale cache.
+        ResourceHandler repoHandler = new ResourceHandler() {
+            @Override
+            protected HttpContent.Factory newHttpContentFactory(ByteBufferPool.Sized bufferPool) {
+                return new ResourceHttpContentFactory(getBaseResource(), getMimeTypes(), bufferPool);
+            }
+        };
+        repoHandler.setBaseResource(ResourceFactory.of(server).newResource(testDir));
+
+        Handler.Sequence handlerList = new Handler.Sequence();
+        handlerList.addHandler(logHandler);
+        handlerList.addHandler(repoHandler);
+        handlerList.addHandler(new DefaultHandler());
+
+        server.setHandler(handlerList);
+        server.start();
+
+        Verifier verifier = newVerifier(testDir);
+        try {
+            if (server.isFailed()) {
+                fail("Couldn't bind the server socket to a free port!");
+            }
+            verifier.setAutoclean(false);
+            verifier.deleteDirectory("target");
+            try {
+                verifier.deleteArtifacts("org.apache.maven.its.mng4554");
+            } catch (IOException e) {
+                // expected when running test on Windows using embedded Maven (JAR files locked by plugin class realm)
+                assertFalse(Files.exists(verifier.getArtifactMetadataPath(
+                        "org.apache.maven.its.mng4554", null, null, "maven-metadata-mng4554.xml")));
+            }
+            Map<String, String> filterProps = verifier.newDefaultFilterMap();
+            NetworkConnector connector = (NetworkConnector) server.getConnectors()[0];
+            filterProps.put("@port@", Integer.toString(connector.getLocalPort()));
+            filterProps.put("@repo@", "repo-it");
+            verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+            verifier.addCliArgument("-s");
+            verifier.addCliArgument("settings.xml");
+
+            ItUtils.copyDirectoryStructure(testDir.resolve("repo-1"), testDir.resolve("repo-it"));
+
+            verifier.setLogFileName("log-refetched-1.txt");
+            verifier.addCliArgument("a:touch");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            verifier.verifyFilePresent("target/touch.txt");
+            assertTrue(requestedUris.contains(metadataUri), requestedUris.toString());
+
+            requestedUris.clear();
+
+            // simulate deployment of new plugin which updates the prefix mapping in the remote repo
+            ItUtils.copyDirectoryStructure(testDir.resolve("repo-2"), testDir.resolve("repo-it"));
+
+            verifier.setLogFileName("log-refetched-2.txt");
+            verifier.addCliArgument("b:touch");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            assertTrue(requestedUris.contains(metadataUri), requestedUris.toString());
+        } finally {
+            server.stop();
+            server.join();
+        }
+    }
+}

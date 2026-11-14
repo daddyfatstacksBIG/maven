@@ -1,0 +1,5 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+  <pluginGroups>
+    <pluginGroup>org.apache.maven.its.mng3372</pluginGroup>
+  </pluginGroups>
+</settings>

@@ -1,0 +1,126 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.NetworkConnector;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.handler.DefaultHandler;
+import org.eclipse.jetty.server.handler.ResourceHandler;
+import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * This is a test set for <a href="https://issues.apache.org/jira/browse/MNG-4500">MNG-4500</a>.
+ *
+ * @author Benjamin Bentmann
+ */
+public class MavenITmng4500NoUpdateOfTimestampedSnapshotsTest extends AbstractMavenIntegrationTestCase {
+
+    /**
+     * Test that timestamped snapshots are treated as immutable, i.e. Maven should never check for updates of them
+     * once downloaded from a remote repo regardless of the update policy.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testit() throws Exception {
+        Path testDir = extractResources("mng-4500");
+
+        String pomUri = "/repo/org/apache/maven/its/mng4500/dep/0.1-SNAPSHOT/dep-0.1-20091219.230823-1.pom";
+        String jarUri = "/repo/org/apache/maven/its/mng4500/dep/0.1-SNAPSHOT/dep-0.1-20091219.230823-1.jar";
+
+        final List<String> requestedUris = Collections.synchronizedList(new ArrayList<>());
+
+        Handler.Abstract logHandler = new Handler.Abstract() {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception {
+                requestedUris.add(Request.getPathInContext(request));
+                return false;
+            }
+        };
+
+        Server server = new Server(0);
+
+        ResourceHandler repoHandler = new ResourceHandler();
+        repoHandler.setBaseResource(ResourceFactory.of(server).newResource(testDir));
+
+        Handler.Sequence handlerList = new Handler.Sequence();
+        handlerList.addHandler(logHandler);
+        handlerList.addHandler(repoHandler);
+        handlerList.addHandler(new DefaultHandler());
+
+        server.setHandler(handlerList);
+
+        Verifier verifier = newVerifier(testDir);
+        try {
+            server.start();
+            if (server.isFailed()) {
+                fail("Couldn't bind the server socket to a free port!");
+            }
+            int port = ((NetworkConnector) server.getConnectors()[0]).getLocalPort();
+            System.out.println("Bound server socket to the port " + port);
+            verifier.setAutoclean(false);
+            verifier.deleteDirectory("target");
+            verifier.deleteArtifacts("org.apache.maven.its.mng4500");
+            Map<String, String> filterProps = verifier.newDefaultFilterMap();
+            filterProps.put("@port@", Integer.toString(port));
+            verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+            verifier.addCliArgument("-s");
+            verifier.addCliArgument("settings.xml");
+
+            verifier.setLogFileName("log-1.txt");
+            verifier.addCliArgument("validate");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            List<String> classpath = verifier.loadLines("target/classpath.txt");
+            assertTrue(classpath.contains("dep-0.1-SNAPSHOT.jar"), classpath.toString());
+            assertTrue(requestedUris.contains(pomUri), requestedUris.toString());
+            assertTrue(requestedUris.contains(jarUri), requestedUris.toString());
+
+            requestedUris.clear();
+
+            verifier.setLogFileName("log-2.txt");
+            verifier.addCliArgument("validate");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+
+            classpath = verifier.loadLines("target/classpath.txt");
+            assertTrue(classpath.contains("dep-0.1-SNAPSHOT.jar"), classpath.toString());
+            assertFalse(requestedUris.contains(pomUri), requestedUris.toString());
+            assertFalse(requestedUris.contains(jarUri), requestedUris.toString());
+        } finally {
+            server.stop();
+            server.join();
+        }
+    }
+}

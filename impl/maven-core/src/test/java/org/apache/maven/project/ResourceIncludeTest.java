@@ -1,0 +1,362 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.project;
+
+import java.io.File;
+import java.nio.file.Path;
+import java.util.List;
+
+import org.apache.maven.api.Language;
+import org.apache.maven.api.ProjectScope;
+import org.apache.maven.impl.DefaultSourceRoot;
+import org.apache.maven.model.Resource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Test for the fix of issue #2486: Includes are not added to existing project resource.
+ */
+class ResourceIncludeTest {
+
+    private MavenProject project;
+
+    @BeforeEach
+    void setUp() {
+        project = new MavenProject();
+        // Set a dummy pom file to establish the base directory
+        project.setFile(new java.io.File("./pom.xml"));
+
+        // Set build output directories
+        project.getBuild().setOutputDirectory("target/classes");
+        project.getBuild().setTestOutputDirectory("target/test-classes");
+
+        // Add a resource source root to the project
+        project.addSourceRoot(
+                new DefaultSourceRoot(ProjectScope.MAIN, Language.RESOURCES, Path.of("src/main/resources")));
+    }
+
+    @Test
+    void testAddIncludeToExistingResource() {
+        // Get the first resource
+        List<Resource> resources = project.getResources();
+        assertEquals(1, resources.size(), "Should have one resource");
+
+        Resource resource = resources.get(0);
+        assertEquals(Path.of("src/main/resources").toString(), resource.getDirectory());
+        assertTrue(resource.getIncludes().isEmpty(), "Initially should have no includes");
+
+        // Add an include - this should work now
+        resource.addInclude("test");
+
+        // Verify the include was added
+        assertEquals(1, resource.getIncludes().size(), "Should have one include");
+        assertEquals("test", resource.getIncludes().get(0), "Include should be 'test'");
+
+        // Verify that getting resources again still shows the include
+        List<Resource> resourcesAfter = project.getResources();
+        assertEquals(1, resourcesAfter.size(), "Should still have one resource");
+        Resource resourceAfter = resourcesAfter.get(0);
+        assertEquals(1, resourceAfter.getIncludes().size(), "Should still have one include");
+        assertEquals("test", resourceAfter.getIncludes().get(0), "Include should still be 'test'");
+    }
+
+    @Test
+    void testAddMultipleIncludes() {
+        Resource resource = project.getResources().get(0);
+
+        // Add multiple includes
+        resource.addInclude("*.xml");
+        resource.addInclude("*.properties");
+
+        // Verify both includes are present
+        assertEquals(2, resource.getIncludes().size(), "Should have two includes");
+        assertTrue(resource.getIncludes().contains("*.xml"), "Should contain *.xml");
+        assertTrue(resource.getIncludes().contains("*.properties"), "Should contain *.properties");
+
+        // Verify persistence
+        Resource resourceAfter = project.getResources().get(0);
+        assertEquals(2, resourceAfter.getIncludes().size(), "Should still have two includes");
+        assertTrue(resourceAfter.getIncludes().contains("*.xml"), "Should still contain *.xml");
+        assertTrue(resourceAfter.getIncludes().contains("*.properties"), "Should still contain *.properties");
+    }
+
+    @Test
+    void testRemoveInclude() {
+        Resource resource = project.getResources().get(0);
+
+        // Add includes
+        resource.addInclude("*.xml");
+        resource.addInclude("*.properties");
+        assertEquals(2, resource.getIncludes().size());
+
+        // Remove one include
+        resource.removeInclude("*.xml");
+
+        // Verify only one include remains
+        assertEquals(1, resource.getIncludes().size(), "Should have one include");
+        assertEquals("*.properties", resource.getIncludes().get(0), "Should only have *.properties");
+
+        // Verify persistence
+        Resource resourceAfter = project.getResources().get(0);
+        assertEquals(1, resourceAfter.getIncludes().size(), "Should still have one include");
+        assertEquals("*.properties", resourceAfter.getIncludes().get(0), "Should still only have *.properties");
+    }
+
+    @Test
+    void testSetIncludes() {
+        Resource resource = project.getResources().get(0);
+
+        // Set includes directly
+        resource.setIncludes(List.of("*.txt", "*.md"));
+
+        // Verify includes were set
+        assertEquals(2, resource.getIncludes().size(), "Should have two includes");
+        assertTrue(resource.getIncludes().contains("*.txt"), "Should contain *.txt");
+        assertTrue(resource.getIncludes().contains("*.md"), "Should contain *.md");
+
+        // Verify persistence
+        Resource resourceAfter = project.getResources().get(0);
+        assertEquals(2, resourceAfter.getIncludes().size(), "Should still have two includes");
+        assertTrue(resourceAfter.getIncludes().contains("*.txt"), "Should still contain *.txt");
+        assertTrue(resourceAfter.getIncludes().contains("*.md"), "Should still contain *.md");
+    }
+
+    @Test
+    void testSourceRootOrderingPreserved() {
+        // Add multiple resource source roots
+        project.addSourceRoot(
+                new DefaultSourceRoot(ProjectScope.MAIN, Language.RESOURCES, Path.of("src/main/resources2")));
+        project.addSourceRoot(
+                new DefaultSourceRoot(ProjectScope.MAIN, Language.RESOURCES, Path.of("src/main/resources3")));
+
+        // Verify initial order
+        List<Resource> resources = project.getResources();
+        assertEquals(3, resources.size(), "Should have three resources");
+        assertEquals(Path.of("src/main/resources").toString(), resources.get(0).getDirectory());
+        assertEquals(Path.of("src/main/resources2").toString(), resources.get(1).getDirectory());
+        assertEquals(Path.of("src/main/resources3").toString(), resources.get(2).getDirectory());
+
+        // Modify the middle resource
+        resources.get(1).addInclude("*.properties");
+
+        // Verify order is preserved after modification
+        List<Resource> resourcesAfter = project.getResources();
+        assertEquals(3, resourcesAfter.size(), "Should still have three resources");
+        assertEquals(
+                Path.of("src/main/resources").toString(), resourcesAfter.get(0).getDirectory());
+        assertEquals(
+                Path.of("src/main/resources2").toString(), resourcesAfter.get(1).getDirectory());
+        assertEquals(
+                Path.of("src/main/resources3").toString(), resourcesAfter.get(2).getDirectory());
+
+        // Verify the modification was applied to the correct resource
+        assertTrue(
+                resourcesAfter.get(1).getIncludes().contains("*.properties"),
+                "Middle resource should have the include");
+        assertTrue(resourcesAfter.get(0).getIncludes().isEmpty(), "First resource should not have includes");
+        assertTrue(resourcesAfter.get(2).getIncludes().isEmpty(), "Third resource should not have includes");
+    }
+
+    @Test
+    void testUnderlyingSourceRootsUpdated() {
+        Resource resource = project.getResources().get(0);
+
+        // Add an include
+        resource.addInclude("*.xml");
+
+        // Verify that the underlying SourceRoot collection was updated
+        java.util.stream.Stream<org.apache.maven.api.SourceRoot> resourceSourceRoots =
+                project.getEnabledSourceRoots(ProjectScope.MAIN, Language.RESOURCES);
+
+        java.util.List<org.apache.maven.api.SourceRoot> sourceRootsList = resourceSourceRoots.toList();
+        assertEquals(1, sourceRootsList.size(), "Should have one resource source root");
+
+        org.apache.maven.api.SourceRoot sourceRoot = sourceRootsList.get(0);
+        assertTrue(sourceRoot.includes().contains("*.xml"), "Underlying SourceRoot should contain the include");
+    }
+
+    @Test
+    void testGeneratedStatePreservedWhenResourceIsUpdated() {
+        project.addSourceRoot(new DefaultSourceRoot(
+                ProjectScope.MAIN, Language.RESOURCES, Path.of("target/generated-resources"), true));
+
+        Resource generatedResource = project.getResources().stream()
+                .filter(resource -> resource.getDirectory().endsWith("generated-resources"))
+                .findFirst()
+                .orElseThrow();
+        generatedResource.addInclude("*.properties");
+
+        org.apache.maven.api.SourceRoot generatedSource = project.getEnabledSourceRoots(
+                        ProjectScope.MAIN, Language.RESOURCES)
+                .filter(source -> source.directory().endsWith("generated-resources"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(generatedSource.generated());
+        assertTrue(generatedSource.includes().contains("*.properties"));
+    }
+
+    /*MNG-11062*/
+    @Test
+    void testTargetPathPreservedWithConnectedResource() {
+        // Create resource with targetPath using Resource constructor pattern
+        Resource resourceWithTarget = new Resource();
+        resourceWithTarget.setDirectory("src/main/custom");
+        resourceWithTarget.setTargetPath("custom-output");
+
+        // Convert through DefaultSourceRoot to ensure targetPath is preserved
+        DefaultSourceRoot sourceRootFromResource =
+                new DefaultSourceRoot(project.getBaseDirectory(), ProjectScope.MAIN, resourceWithTarget.getDelegate());
+
+        project.addSourceRoot(sourceRootFromResource);
+
+        // Get resources - this creates ConnectedResource instances
+        List<Resource> resources = project.getResources();
+        assertEquals(2, resources.size(), "Should have two resources now");
+
+        // Find the resource with the custom directory
+        Resource customResource = resources.stream()
+                .filter(r -> r.getDirectory().endsWith("custom"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Custom resource not found"));
+
+        // Verify targetPath was preserved through conversion chain
+        assertEquals(
+                "custom-output", customResource.getTargetPath(), "targetPath should be preserved in ConnectedResource");
+
+        // Test that includes modification preserves targetPath (tests ConnectedResource functionality)
+        customResource.addInclude("*.properties");
+        assertEquals(
+                "custom-output", customResource.getTargetPath(), "targetPath should survive includes modification");
+        assertEquals(1, customResource.getIncludes().size(), "Should have one include");
+
+        // Verify persistence after getting resources again
+        Resource persistedResource = project.getResources().stream()
+                .filter(r -> r.getDirectory().endsWith("custom"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(
+                "custom-output",
+                persistedResource.getTargetPath(),
+                "targetPath should persist after resource retrieval");
+        assertTrue(persistedResource.getIncludes().contains("*.properties"), "Include should persist with targetPath");
+    }
+
+    /*MNG-11062*/
+    @Test
+    void testTargetPathEdgeCases() {
+        // Test null targetPath (should be handled gracefully)
+        Resource nullTargetResource = new Resource();
+        nullTargetResource.setDirectory("src/test/null-target");
+        // targetPath is null by default
+
+        DefaultSourceRoot nullTargetSourceRoot =
+                new DefaultSourceRoot(project.getBaseDirectory(), ProjectScope.MAIN, nullTargetResource.getDelegate());
+        project.addSourceRoot(nullTargetSourceRoot);
+
+        List<Resource> resources = project.getResources();
+        Resource nullTargetResult = resources.stream()
+                .filter(r -> r.getDirectory().endsWith("null-target"))
+                .findFirst()
+                .orElseThrow();
+
+        // null targetPath should remain null (not cause errors)
+        assertNull(nullTargetResult.getTargetPath(), "Null targetPath should remain null");
+
+        // Test property placeholder in targetPath
+        Resource placeholderResource = new Resource();
+        placeholderResource.setDirectory("src/test/placeholder");
+        placeholderResource.setTargetPath("${project.build.directory}/custom");
+
+        DefaultSourceRoot placeholderSourceRoot =
+                new DefaultSourceRoot(project.getBaseDirectory(), ProjectScope.MAIN, placeholderResource.getDelegate());
+        project.addSourceRoot(placeholderSourceRoot);
+
+        Resource placeholderResult = project.getResources().stream()
+                .filter(r -> r.getDirectory().endsWith("placeholder"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(
+                "${project.build.directory}" + File.separator + "custom",
+                placeholderResult.getTargetPath(),
+                "Property placeholder in targetPath should be preserved");
+    }
+
+    /**
+     * Verifies that resources added via {@code project.addResource()} or
+     * {@code project.getResources().add()} are visible through both
+     * {@code project.getResources()} and {@code project.getBuild().getResources()}.
+     * This is important for Maven 3 compatibility, since plugins may access
+     * resources through either path.
+     *
+     * @see <a href="https://github.com/apache/maven-source-plugin/pull/281">maven-source-plugin#281</a>
+     */
+    @Test
+    void testAddResourceVisibleViaBuildGetResources() {
+        // Initial state: one resource in sources, none added dynamically
+        assertEquals(1, project.getResources().size());
+        int initialBuildResources = project.getBuild().getResources().size();
+
+        // Add a resource dynamically (simulating what maven-remote-resources-plugin does)
+        Resource dynamicResource = new Resource();
+        dynamicResource.setDirectory("target/maven-shared-archive-resources");
+        project.addResource(dynamicResource);
+
+        // Verify visible via project.getResources()
+        List<Resource> projectResources = project.getResources();
+        assertEquals(2, projectResources.size(), "Dynamic resource should be visible via project.getResources()");
+
+        // Verify ALSO visible via project.getBuild().getResources()
+        List<Resource> buildResources = project.getBuild().getResources();
+        assertEquals(
+                initialBuildResources + 1,
+                buildResources.size(),
+                "Dynamic resource should also be visible via project.getBuild().getResources()");
+
+        boolean found =
+                buildResources.stream().anyMatch(r -> r.getDirectory().contains("maven-shared-archive-resources"));
+        assertTrue(found, "getBuild().getResources() should contain the dynamically added resource");
+    }
+
+    /**
+     * Same as above but using {@code project.getResources().add()} path.
+     */
+    @Test
+    void testAddResourceViaListVisibleViaBuildGetResources() {
+        int initialBuildResources = project.getBuild().getResources().size();
+
+        Resource dynamicResource = new Resource();
+        dynamicResource.setDirectory("target/maven-shared-archive-resources");
+        project.getResources().add(dynamicResource);
+
+        List<Resource> buildResources = project.getBuild().getResources();
+        assertEquals(
+                initialBuildResources + 1,
+                buildResources.size(),
+                "Resource added via getResources().add() should be visible via getBuild().getResources()");
+
+        boolean found =
+                buildResources.stream().anyMatch(r -> r.getDirectory().contains("maven-shared-archive-resources"));
+        assertTrue(found, "getBuild().getResources() should contain the resource added via getResources().add()");
+    }
+}

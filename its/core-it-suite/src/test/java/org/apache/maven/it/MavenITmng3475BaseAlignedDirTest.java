@@ -1,0 +1,79 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.Properties;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * This is a test set for <a href="https://issues.apache.org/jira/browse/MNG-3475">MNG-3475</a> and
+ * <a href="https://issues.apache.org/jira/browse/MNG-1927">MNG-1927</a>.
+ *
+ * @author Benjamin Bentmann
+ *
+ */
+public class MavenITmng3475BaseAlignedDirTest extends AbstractMavenIntegrationTestCase {
+
+    /**
+     * Verify that project directories are basedir aligned when queried by plugin parameter expressions.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testitMNG3475() throws Exception {
+        Path testDir = extractResources("mng-3475");
+
+        Verifier verifier = newVerifier(testDir);
+        verifier.setAutoclean(false);
+        verifier.deleteDirectory("target");
+        verifier.addCliArgument("validate");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+
+        Properties configProps = verifier.loadProperties("target/config.properties");
+
+        assertPathEquals(testDir, "target", configProps.getProperty("mapParam.buildDirectory"));
+
+        assertPathEquals(testDir, "target/classes", configProps.getProperty("mapParam.buildOutputDirectory"));
+
+        assertPathEquals(testDir, "target/test-classes", configProps.getProperty("mapParam.buildTestOutputDirectory"));
+
+        assertPathEquals(testDir, "src/main/java", configProps.getProperty("mapParam.buildSourceDirectory"));
+
+        assertPathEquals(testDir, "src/test/java", configProps.getProperty("mapParam.buildTestSourceDirectory"));
+
+        // show that using relative paths is aligned for File configuration properties regardless
+        assertPathEquals(testDir, "target/site", configProps.getProperty("fileParam"));
+
+        /*
+         * NOTE: The script source directory is deliberately excluded from the checks due to MNG-3741.
+         */
+    }
+
+    private void assertPathEquals(Path basedir, String expected, String actual) throws IOException {
+        Path actualFile = Path.of(actual);
+        assertTrue(actualFile.isAbsolute(), "path not absolute: " + actualFile);
+        ItUtils.assertCanonicalFileEquals(basedir.resolve(expected), actualFile);
+    }
+}

@@ -1,0 +1,101 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.NetworkConnector;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.handler.DefaultHandler;
+import org.eclipse.jetty.util.Callback;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * This is a test set for <a href="https://issues.apache.org/jira/browse/MNG-4772">MNG-4772</a>.
+ *
+ * @author Benjamin Bentmann
+ */
+public class MavenITmng4772PluginVersionResolutionDoesntTouchDisabledRepoTest extends AbstractMavenIntegrationTestCase {
+
+    /**
+     * Verify that repositories which have both releases and snapshots disabled aren't touched when looking for
+     * the latest plugin version.
+     *
+     * @throws Exception in case of failure
+     */
+    @Test
+    public void testit() throws Exception {
+        Path testDir = extractResources("mng-4772");
+
+        final List<String> requestedUris = Collections.synchronizedList(new ArrayList<>());
+
+        Handler.Abstract logHandler = new Handler.Abstract() {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception {
+                requestedUris.add(Request.getPathInContext(request));
+                return false;
+            }
+        };
+
+        Handler.Sequence handlerList = new Handler.Sequence();
+        handlerList.addHandler(logHandler);
+        handlerList.addHandler(new DefaultHandler());
+
+        Server server = new Server(0);
+        server.setHandler(handlerList);
+        server.start();
+
+        Verifier verifier = newVerifier(testDir);
+        try {
+            if (server.isFailed()) {
+                fail("Couldn't bind the server socket to a free port!");
+            }
+            int port = ((NetworkConnector) server.getConnectors()[0]).getLocalPort();
+            System.out.println("Bound server socket to the port " + port);
+            verifier.setAutoclean(false);
+            verifier.deleteDirectory("target");
+            Map<String, String> filterProps = verifier.newDefaultFilterMap();
+            filterProps.put("@port@", Integer.toString(port));
+            verifier.filterFile("settings-template.xml", "settings.xml", filterProps);
+            verifier.addCliArgument("-U");
+            verifier.addCliArgument("-s");
+            verifier.addCliArgument("settings.xml");
+            verifier.addCliArgument("org.apache.maven.its.mng4772:maven-it-plugin:touch");
+            verifier.execute();
+            verifier.verifyErrorFreeLog();
+            fail("Build should have failed to resolve version for unknown plugin");
+        } catch (VerificationException e) {
+            // expected
+        } finally {
+            server.stop();
+            server.join();
+        }
+
+        assertTrue(requestedUris.isEmpty(), requestedUris.toString());
+    }
+}

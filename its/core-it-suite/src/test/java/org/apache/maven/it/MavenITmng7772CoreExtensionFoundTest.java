@@ -1,0 +1,74 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class MavenITmng7772CoreExtensionFoundTest extends AbstractMavenIntegrationTestCase {
+
+    @Test
+    public void testWithExtensionsXmlCoreExtensionsFound() throws Exception {
+        Path testDir = extractResources("mng-7772-core-extensions-found");
+
+        Verifier verifier = newVerifier(testDir.resolve("extension"));
+        verifier.setLogFileName("extension-install.txt");
+        verifier.addCliArgument("install");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+        Path installedToLocalRepo = verifier.getLocalRepository();
+
+        verifier = newVerifier(testDir);
+        verifier.setUserHomeDirectory(testDir.resolve("home-extensions-xml"));
+        verifier.addCliArgument("-Dmaven.repo.local=" + installedToLocalRepo);
+
+        verifier.addCliArgument("validate");
+        verifier.execute();
+
+        verifier.verifyTextInLog("[INFO] Extension loaded!");
+    }
+
+    @Test
+    public void testWithLibExtCoreExtensionsFound() throws Exception {
+        Path testDir = extractResources("mng-7772-core-extensions-found");
+
+        Path extensionBasedir = testDir.resolve("extension");
+        Verifier verifier = newVerifier(extensionBasedir);
+        verifier.setLogFileName("extension-package.txt");
+        verifier.addCliArgument("package");
+        verifier.execute();
+        verifier.verifyErrorFreeLog();
+
+        Path jarPath = extensionBasedir.resolve("target").resolve("maven-it-core-extensions-0.1.jar");
+
+        assertTrue(Files.isRegularFile(jarPath), "Jar output path was not built");
+
+        verifier = newVerifier(testDir);
+        verifier.setUserHomeDirectory(Paths.get(testDir.toString(), "home-lib-ext"));
+        verifier.addCliArgument("-Dmaven.ext.class.path=" + jarPath);
+        verifier.addCliArgument("validate");
+        verifier.execute();
+        verifier.verifyTextInLog("[INFO] Extension loaded!");
+    }
+}

@@ -1,0 +1,85 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.api.services;
+
+import org.apache.maven.api.annotations.Experimental;
+import org.apache.maven.api.annotations.Nonnull;
+import org.apache.maven.api.settings.Settings;
+
+/**
+ * Result of building the effective Maven settings, providing access to the assembled
+ * {@link org.apache.maven.api.settings.Settings} and any problems encountered during the build.
+ *
+ * @since 4.0.0
+ */
+@Experimental
+public interface SettingsBuilderResult extends Result<SettingsBuilderRequest> {
+
+    /**
+     * Gets the assembled settings.
+     *
+     * @return the assembled settings, never {@code null}
+     */
+    @Nonnull
+    Settings getEffectiveSettings();
+
+    /**
+     * Gets the installation-scoped settings (before merging).
+     *
+     * @return the installation settings, never {@code null} (empty if not configured)
+     * @since 4.2.0
+     */
+    @Nonnull
+    default Settings getInstallationSettings() {
+        return Settings.newInstance();
+    }
+
+    /**
+     * Gets the project-scoped settings (before merging).
+     * This is the tier where {@code <phases>} and project-specific {@code <extensions>} are authoritative.
+     *
+     * @return the project settings, never {@code null} (empty if not configured)
+     * @since 4.2.0
+     */
+    @Nonnull
+    default Settings getProjectSettings() {
+        return Settings.newInstance();
+    }
+
+    /**
+     * Gets the user-scoped settings (before merging).
+     *
+     * @return the user settings, never {@code null} (empty if not configured)
+     * @since 4.2.0
+     */
+    @Nonnull
+    default Settings getUserSettings() {
+        return Settings.newInstance();
+    }
+
+    /**
+     * Gets the problems that were encountered during the settings building. Note that only problems of severity
+     * {@link BuilderProblem.Severity#WARNING} and below are reported here. Problems with a higher severity level cause
+     * the settings builder to fail with a {@link SettingsBuilderException}.
+     *
+     * @return the problems that were encountered during the settings building, can be empty but never {@code null}
+     */
+    @Nonnull
+    ProblemCollector<BuilderProblem> getProblems();
+}

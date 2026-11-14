@@ -1,0 +1,335 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.impl.model;
+
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.BinaryOperator;
+import java.util.function.Function;
+import java.util.function.UnaryOperator;
+
+import org.apache.maven.api.Constants;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.di.Named;
+import org.apache.maven.api.di.Singleton;
+import org.apache.maven.api.model.Model;
+import org.apache.maven.api.services.BuilderProblem;
+import org.apache.maven.api.services.Interpolator;
+import org.apache.maven.api.services.InterpolatorException;
+import org.apache.maven.api.services.ModelBuilderRequest;
+import org.apache.maven.api.services.ModelProblem;
+import org.apache.maven.api.services.ModelProblemCollector;
+import org.apache.maven.api.services.ModelSource;
+import org.apache.maven.api.services.model.ModelInterpolator;
+import org.apache.maven.api.services.model.RootLocator;
+import org.apache.maven.impl.DefaultUrlNormalizer;
+import org.apache.maven.impl.model.reflection.ReflectionValueExtractor;
+import org.apache.maven.model.v4.MavenTransformer;
+
+@Named
+@Singleton
+public class DefaultModelInterpolator implements ModelInterpolator {
+
+    private static final String PREFIX_PROJECT = "project.";
+    private static final String PREFIX_POM = "pom.";
+    private static final List<String> PROJECT_PREFIXES_3_1 = Arrays.asList(PREFIX_POM, PREFIX_PROJECT);
+    private static final List<String> PROJECT_PREFIXES_4_0 = Collections.singletonList(PREFIX_PROJECT);
+
+    // MNG-1927, MNG-2124, MNG-3355:
+    // If the build section is present and the project directory is non-null, we should make
+    // sure interpolation of the directories below uses translated paths.
+    // Afterward, we'll double back and translate any paths that weren't covered during interpolation via the
+    // code below...
+    private static final Set<String> TRANSLATED_PATH_EXPRESSIONS = Set.of(
+            "build.directory",
+            "build.outputDirectory",
+            "build.testOutputDirectory",
+            "build.sourceDirectory",
+            "build.testSourceDirectory",
+            "build.scriptSourceDirectory",
+            "reporting.outputDirectory");
+
+    private static final Set<String> URL_EXPRESSIONS = Set.of(
+            "project.url",
+            "project.scm.url",
+            "project.scm.connection",
+            "project.scm.developerConnection",
+            "project.distributionManagement.site.url");
+
+    private final RootLocator rootLocator;
+    private final Interpolator interpolator;
+
+    @Inject
+    public DefaultModelInterpolator(RootLocator rootLocator, Interpolator interpolator) {
+        this.rootLocator = rootLocator;
+        this.interpolator = interpolator;
+    }
+
+    interface InnerInterpolator {
+        String interpolate(String value);
+    }
+
+    @Override
+    public Model interpolateModel(
+            Model model, Path projectDir, ModelBuilderRequest request, ModelProblemCollector problems) {
+        InnerInterpolator innerInterpolator = createInterpolator(model, projectDir, request, problems);
+        return new MavenTransformer(innerInterpolator::interpolate) {
+            @Override
+            protected String transform(String value) {
+                // Fast path: skip the interpolation callback chain for strings
+                // that cannot contain variable references (the vast majority).
+                // This is safe here because this transformer is only used for
+                // interpolation (${...}), NOT for decryption ({...}).
+                if (value == null || value.indexOf('$') < 0) {
+                    return value;
+                }
+                return super.transform(value);
+            }
+        }.visit(model);
+    }
+
+    private InnerInterpolator createInterpolator(
+            Model model, Path projectDir, ModelBuilderRequest request, ModelProblemCollector problems) {
+
+        Map<String, Optional<String>> cache = new HashMap<>();
+        Function<String, Optional<String>> ucb =
+                v -> Optional.ofNullable(callback(model, projectDir, request, problems, v));
+        UnaryOperator<String> cb = v -> cache.computeIfAbsent(v, ucb).orElse(null);
+        BinaryOperator<String> postprocessor = (e, v) -> postProcess(projectDir, request, e, v);
+        // Reuse a single HashSet for cycle detection across all strings in this model.
+        // The set is cleared after each substVars call returns, avoiding a new HashSet
+        // allocation per interpolated string (~550 allocations per Camel build).
+        HashSet<String> cycleMap = new HashSet<>();
+        // Downcast to access the package-private interpolate() overload that accepts
+        // an externally-managed cycleMap, allowing us to reuse the same HashSet across
+        // all strings in this model. Safe because DefaultInterpolator is the only
+        // implementation bound via DI in the Maven runtime.
+        DefaultInterpolator di = (DefaultInterpolator) interpolator;
+        return value -> {
+            try {
+                cycleMap.clear();
+                return di.interpolate(value, null, cycleMap, cb, postprocessor, false);
+            } catch (InterpolatorException e) {
+                problems.add(BuilderProblem.Severity.ERROR, ModelProblem.Version.BASE, e.getMessage(), e);
+                // Keep the original text rather than handing null back to the transformer. A null
+                // ends up as an element of a List<String> model field such as build/filters, and
+                // the immutable model constructor copies that list with List.copyOf, which fails
+                // with a bare NullPointerException that hides the problem just collected above.
+                return value;
+            }
+        };
+    }
+
+    protected List<String> getProjectPrefixes(ModelBuilderRequest request) {
+        return request.getRequestType() == ModelBuilderRequest.RequestType.BUILD_PROJECT
+                ? PROJECT_PREFIXES_4_0
+                : PROJECT_PREFIXES_3_1;
+    }
+
+    String callback(
+            Model model,
+            Path projectDir,
+            ModelBuilderRequest request,
+            ModelProblemCollector problems,
+            String expression) {
+        String value = doCallback(model, projectDir, request, problems, expression);
+        if (value != null) {
+            // value = postProcess(projectDir, request, expression, value);
+        }
+        return value;
+    }
+
+    private String postProcess(Path projectDir, ModelBuilderRequest request, String expression, String value) {
+        // path translation
+        String exp = unprefix(expression, getProjectPrefixes(request));
+        if (TRANSLATED_PATH_EXPRESSIONS.contains(exp)) {
+            value = DefaultPathTranslator.alignToBaseDirectory(value, projectDir);
+        }
+        // normalize url
+        if (URL_EXPRESSIONS.contains(expression)) {
+            value = DefaultUrlNormalizer.normalize(value);
+        }
+        return value;
+    }
+
+    private String unprefix(String expression, List<String> prefixes) {
+        for (String prefix : prefixes) {
+            if (expression.startsWith(prefix)) {
+                return expression.substring(prefix.length());
+            }
+        }
+        return expression;
+    }
+
+    String doCallback(
+            Model model,
+            Path projectDir,
+            ModelBuilderRequest request,
+            ModelProblemCollector problems,
+            String expression) {
+        // basedir (the prefixed combos are handled below)
+        if ("basedir".equals(expression)) {
+            return projectProperty(model, projectDir, expression, false);
+        }
+        // timestamp
+        if ("build.timestamp".equals(expression) || "maven.build.timestamp".equals(expression)) {
+            return new MavenBuildTimestamp(request.getSession().getStartTime(), model.getProperties())
+                    .formattedTimestamp();
+        }
+        // Models built at ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY are the models
+        // Maven builds while resolving a dependency POM from a repository, not the operator's
+        // own project (see DefaultModelBuilder#resolveAndReadParentExternally and
+        // DefaultArtifactDescriptorReader for the equivalent path used before this builder is
+        // invoked). Such models interpolate their user/system properties only against a small,
+        // environment-independent allowlist; everything else, including environment variables
+        // and arbitrary -D properties, is left as a literal unresolved expression.
+        boolean restricted = restrictExternalModelInterpolation(request);
+
+        // user properties
+        String value = (!restricted || isSafeExternalExpression(expression))
+                ? request.getUserProperties().get(expression)
+                : null;
+        // model properties (check before prefixed model reflection to avoid recursion)
+        if (value == null) {
+            value = model.getProperties().get(expression);
+        }
+        // prefixed model reflection
+        if (value == null) {
+            for (String prefix : getProjectPrefixes(request)) {
+                if (expression.startsWith(prefix)) {
+                    String subExpr = expression.substring(prefix.length());
+                    value = projectProperty(model, projectDir, subExpr, true);
+                    if (value != null) {
+                        return value;
+                    }
+                }
+            }
+        }
+        // system properties
+        if (value == null && (!restricted || isSafeExternalExpression(expression))) {
+            value = request.getSystemProperties().get(expression);
+        }
+        // environment variables
+        if (value == null && !restricted) {
+            value = request.getSystemProperties().get("env." + expression);
+        }
+        // un-prefixed model reflection
+        if (value == null) {
+            value = projectProperty(model, projectDir, expression, false);
+        }
+        return value;
+    }
+
+    private static boolean restrictExternalModelInterpolation(ModelBuilderRequest request) {
+        ModelBuilderRequest.RequestType type = request.getRequestType();
+        boolean externalModel = (type == ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY
+                        || type == ModelBuilderRequest.RequestType.CONSUMER_PARENT)
+                && isRepositoryResolved(request.getSource());
+        return externalModel
+                && !Boolean.parseBoolean(
+                        request.getSystemProperties().get(Constants.MAVEN_MODEL_DEPENDENCY_INTERPOLATION_FULL))
+                && !Boolean.parseBoolean(
+                        request.getUserProperties().get(Constants.MAVEN_MODEL_DEPENDENCY_INTERPOLATION_FULL));
+    }
+
+    /**
+     * Whether the given source is one Maven resolved from a repository rather than one supplied to
+     * it. {@link org.apache.maven.api.services.Sources#resolvedSource} carries the resolved model's
+     * coordinates, and it is the only source kind that does; a POM built from a file the caller
+     * pointed at reports none.
+     */
+    private static boolean isRepositoryResolved(ModelSource source) {
+        return source != null && source.getModelId() != null;
+    }
+
+    /**
+     * Expressions that models built at {@link ModelBuilderRequest.RequestType#CONSUMER_DEPENDENCY}
+     * or {@link ModelBuilderRequest.RequestType#CONSUMER_PARENT} may still resolve from the
+     * session properties: JVM- and Maven-defined properties, plus the CI-friendly version
+     * properties (MNG-5895). All other expressions are left literal.
+     */
+    private static boolean isSafeExternalExpression(String expression) {
+        return expression.startsWith("java.")
+                || expression.startsWith("os.")
+                || expression.startsWith("maven.")
+                || "file.separator".equals(expression)
+                || "path.separator".equals(expression)
+                || "line.separator".equals(expression)
+                || "revision".equals(expression)
+                || "changelist".equals(expression)
+                || "sha1".equals(expression);
+    }
+
+    String projectProperty(Model model, Path projectDir, String subExpr, boolean prefixed) {
+        if (projectDir != null) {
+            if (subExpr.equals("basedir")) {
+                return projectDir.toAbsolutePath().toString();
+            } else if (subExpr.startsWith("basedir.")) {
+                try {
+                    Object value = ReflectionValueExtractor.evaluate(subExpr, projectDir.toAbsolutePath(), true);
+                    if (value != null) {
+                        return value.toString();
+                    }
+                } catch (Exception e) {
+                    // addFeedback("Failed to extract \'" + expression + "\' from: " + root, e);
+                }
+            } else if (prefixed && subExpr.equals("baseUri")) {
+                return projectDir.toAbsolutePath().toUri().toASCIIString();
+            } else if (prefixed && subExpr.startsWith("baseUri.")) {
+                try {
+                    Object value = ReflectionValueExtractor.evaluate(
+                            subExpr, projectDir.toAbsolutePath().toUri(), true);
+                    if (value != null) {
+                        return value.toString();
+                    }
+                } catch (Exception e) {
+                    // addFeedback("Failed to extract \'" + expression + "\' from: " + root, e);
+                }
+            } else if (prefixed && subExpr.equals("rootDirectory")) {
+                return rootLocator.findMandatoryRoot(projectDir).toString();
+            } else if (prefixed && subExpr.startsWith("rootDirectory.")) {
+                try {
+                    Object value =
+                            ReflectionValueExtractor.evaluate(subExpr, rootLocator.findMandatoryRoot(projectDir), true);
+                    if (value != null) {
+                        return value.toString();
+                    }
+                } catch (Exception e) {
+                    // addFeedback("Failed to extract \'" + expression + "\' from: " + root, e);
+                }
+            }
+        }
+        try {
+            Object value = ReflectionValueExtractor.evaluate(subExpr, model, false);
+            if (value != null) {
+                return value.toString();
+            }
+        } catch (Exception e) {
+            // addFeedback("Failed to extract \'" + expression + "\' from: " + root, e);
+        }
+        return null;
+    }
+}

@@ -1,0 +1,251 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.repository;
+
+import javax.inject.Named;
+import javax.inject.Singleton;
+
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.apache.maven.RepositoryUtils;
+import org.apache.maven.artifact.repository.ArtifactRepository;
+import org.apache.maven.settings.Mirror;
+
+/**
+ * DefaultMirrorSelector
+ */
+@Named
+@Singleton
+@Deprecated
+public class DefaultMirrorSelector implements MirrorSelector {
+
+    private static final String WILDCARD = "*";
+
+    private static final String EXTERNAL_WILDCARD = "external:*";
+
+    private static final String EXTERNAL_HTTP_WILDCARD = "external:http:*";
+
+    @Override
+    public Mirror getMirror(ArtifactRepository repository, List<Mirror> mirrors) {
+        String repoId = repository.getId();
+
+        if (repoId != null && mirrors != null) {
+            for (Mirror mirror : mirrors) {
+                if (repoId.equals(mirror.getMirrorOf()) && matchesLayout(repository, mirror)) {
+                    return mirror;
+                }
+            }
+
+            for (Mirror mirror : mirrors) {
+                if (matchPattern(repository, mirror.getMirrorOf()) && matchesLayout(repository, mirror)) {
+                    return mirror;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * This method checks if the pattern matches the originalRepository. Valid patterns:
+     * <ul>
+     * <li>{@code *} = everything,</li>
+     * <li>{@code external:*} = everything not on the localhost and not file based,</li>
+     * <li>{@code external:http:*} = any repository not on the localhost using HTTP,</li>
+     * <li>{@code repo,repo1} = {@code repo} or {@code repo1},</li>
+     * <li>{@code *,!repo1} = everything except {@code repo1}.</li>
+     * </ul>
+     *
+     * @param originalRepository to compare for a match.
+     * @param pattern used for match.
+     * @return true if the repository is a match to this pattern.
+     */
+    static boolean matchPattern(ArtifactRepository originalRepository, String pattern) {
+        boolean result = false;
+        String originalId = originalRepository.getId();
+
+        // simple checks first to short circuit processing below.
+        if (WILDCARD.equals(pattern) || pattern.equals(originalId)) {
+            result = true;
+        } else {
+            // process the list
+            String[] repos = pattern.split(",");
+            for (String repo : repos) {
+                repo = repo.trim();
+                // see if this is a negative match
+                if (repo.length() > 1 && repo.startsWith("!")) {
+                    if (repo.substring(1).equals(originalId)) {
+                        // explicitly exclude. Set result and stop processing.
+                        result = false;
+                        break;
+                    }
+                }
+                // check for exact match
+                else if (repo.equals(originalId)) {
+                    result = true;
+                    break;
+                }
+                // check for external:*
+                else if (EXTERNAL_WILDCARD.equals(repo) && isExternalRepo(originalRepository)) {
+                    result = true;
+                    // don't stop processing in case a future segment explicitly excludes this repo
+                }
+                // check for external:http:*
+                else if (EXTERNAL_HTTP_WILDCARD.equals(repo) && isExternalHttpRepo(originalRepository)) {
+                    result = true;
+                    // don't stop processing in case a future segment explicitly excludes this repo
+                } else if (WILDCARD.equals(repo)) {
+                    result = true;
+                    // don't stop processing in case a future segment explicitly excludes this repo
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Pattern matching the protocol (scheme) and host of a repository URL textually, the way the
+     * resolver's {@code RemoteRepository} does. {@code java.net.URL} must not be used here: it
+     * rejects any scheme without a registered JDK stream handler (e.g. {@code dav}, {@code
+     * dav:http}, {@code dav+http}), which would make such repositories silently bypass {@code
+     * external:*} and {@code external:http:*} mirror matching below.
+     */
+    private static final Pattern URL_PROTOCOL_AND_HOST =
+            Pattern.compile("([^:/]+(:[^:/]{2,}+(?=://))?):(//([^@/]*@)?(\\[[^\\]]*\\]|[^/:]+))?.*");
+
+    /** An IPv4 address of the loopback range 127.0.0.0/8. */
+    private static final Pattern IPV4_LOOPBACK = Pattern.compile("127(\\.(25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}");
+
+    /**
+     * Checks the URL to see if this repository refers to an external repository. A URL that
+     * cannot be parsed is treated as external, so that {@code external:*} mirror rules apply to
+     * it rather than silently skipping it.
+     *
+     * @param originalRepository
+     * @return true if external.
+     */
+    static boolean isExternalRepo(ArtifactRepository originalRepository) {
+        String url = originalRepository.getUrl();
+        Matcher m = url != null ? URL_PROTOCOL_AND_HOST.matcher(url) : null;
+        if (m == null || !m.matches()) {
+            // an unparseable url is not exempt from external:* mirror rules; treat it as external
+            return true;
+        }
+        return !(isLocal(m.group(5)) || "file".equalsIgnoreCase(m.group(1)));
+    }
+
+    /**
+     * Checks whether a host names the local machine: {@code localhost}, an IPv4 address of the loopback
+     * range {@code 127.0.0.0/8} or an IPv6 loopback address in brackets. An IPv4-mapped IPv6 address is judged by its
+     * IPv4 address. The names are not resolved.
+     *
+     * @param host the host of a repository URL, may be {@code null}
+     * @return true if the host is local
+     */
+    private static boolean isLocal(String host) {
+        if (host == null) {
+            return false;
+        }
+        if ("localhost".equals(host) || IPV4_LOOPBACK.matcher(host).matches()) {
+            return true;
+        }
+        if (host.startsWith("[") && host.endsWith("]")) {
+            try {
+                // an IP literal is parsed without any name lookup
+                return InetAddress.getByName(host).isLoopbackAddress();
+            } catch (UnknownHostException e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks the URL to see if this repository refers to a non-localhost repository using HTTP.
+     * A URL that cannot be parsed is treated as external, so that the shipped {@code
+     * external:http:*} mirror rule applies to it rather than silently skipping it.
+     *
+     * @param originalRepository
+     * @return true if external.
+     */
+    static boolean isExternalHttpRepo(ArtifactRepository originalRepository) {
+        String url = originalRepository.getUrl();
+        Matcher m = url != null ? URL_PROTOCOL_AND_HOST.matcher(url) : null;
+        if (m == null || !m.matches()) {
+            // an unparseable url is not exempt from the external:http:* mirror rule; treat it as external
+            return true;
+        }
+        String protocol = m.group(1);
+        return ("http".equalsIgnoreCase(protocol)
+                        || "dav".equalsIgnoreCase(protocol)
+                        || "dav:http".equalsIgnoreCase(protocol)
+                        || "dav+http".equalsIgnoreCase(protocol))
+                && !isLocal(m.group(5));
+    }
+
+    static boolean matchesLayout(ArtifactRepository repository, Mirror mirror) {
+        return matchesLayout(RepositoryUtils.getLayout(repository), mirror.getMirrorOfLayouts());
+    }
+
+    /**
+     * Checks whether the layouts configured for a mirror match with the layout of the repository.
+     *
+     * @param repoLayout The layout of the repository, may be {@code null}.
+     * @param mirrorLayout The layouts supported by the mirror, may be {@code null}.
+     * @return {@code true} if the layouts associated with the mirror match the layout of the original repository,
+     *         {@code false} otherwise.
+     */
+    static boolean matchesLayout(String repoLayout, String mirrorLayout) {
+        boolean result = false;
+
+        // simple checks first to short circuit processing below.
+        if ((mirrorLayout == null || mirrorLayout.isEmpty()) || WILDCARD.equals(mirrorLayout)) {
+            result = true;
+        } else if (mirrorLayout.equals(repoLayout)) {
+            result = true;
+        } else {
+            // process the list
+            String[] layouts = mirrorLayout.split(",");
+            for (String layout : layouts) {
+                // see if this is a negative match
+                if (layout.length() > 1 && layout.startsWith("!")) {
+                    if (layout.substring(1).equals(repoLayout)) {
+                        // explicitly exclude. Set result and stop processing.
+                        result = false;
+                        break;
+                    }
+                }
+                // check for exact match
+                else if (layout.equals(repoLayout)) {
+                    result = true;
+                    break;
+                } else if (WILDCARD.equals(layout)) {
+                    result = true;
+                    // don't stop processing in case a future segment explicitly excludes this repo
+                }
+            }
+        }
+
+        return result;
+    }
+}

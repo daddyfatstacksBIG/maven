@@ -1,0 +1,65 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.maven.it;
+
+import java.io.IOException;
+import java.nio.file.Path;
+
+import org.junit.jupiter.api.Test;
+
+public class MavenITmng7160ExtensionClassloader extends AbstractMavenIntegrationTestCase {
+
+    @Test
+    public void testVerify() throws IOException, VerificationException {
+        final Path projectDir = extractResources("mng-7160-extensionclassloader");
+
+        final Verifier extensionVerifier = newVerifier(projectDir.resolve("extension"));
+        extensionVerifier.addCliArgument("install");
+        extensionVerifier.execute();
+        extensionVerifier.verifyErrorFreeLog();
+
+        final Verifier verifier1 = newVerifier(projectDir.resolve("project-build"));
+        verifier1.addCliArgument("install");
+        verifier1.execute();
+        verifier1.verifyErrorFreeLog();
+        verifier1.verifyTextInLog("xpp3 -> mvn");
+        verifier1.verifyTextInLog("base64 -> ext");
+
+        final Verifier verifier2 = newVerifier(projectDir.resolve("project-core-parent-first"));
+        verifier2.addCliArgument("install");
+        verifier2.execute();
+        verifier2.verifyErrorFreeLog();
+        verifier2.verifyTextInLog("xpp3 -> mvn");
+        verifier2.verifyTextInLog("base64 -> mvn");
+
+        final Verifier verifier3 = newVerifier(projectDir.resolve("project-core-plugin"));
+        verifier3.addCliArgument("verify");
+        verifier3.execute();
+        verifier3.verifyErrorFreeLog();
+        verifier3.verifyTextInLog("xpp3 -> mvn");
+        verifier3.verifyTextInLog("base64 -> ext");
+
+        final Verifier verifier4 = newVerifier(projectDir.resolve("project-core-self-first"));
+        verifier4.addCliArgument("verify");
+        verifier4.execute();
+        verifier4.verifyErrorFreeLog();
+        verifier4.verifyTextInLog("xpp3 -> ext");
+        verifier4.verifyTextInLog("base64 -> ext");
+    }
+}

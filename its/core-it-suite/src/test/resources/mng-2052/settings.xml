@@ -1,0 +1,13 @@
+<settings xmlns='http://maven.apache.org/SETTINGS/1.0.0'>
+  <profiles>
+    <profile>
+      <id>test</id>
+      <properties>
+        <libdir>lib</libdir>
+      </properties>
+    </profile>
+  </profiles>
+  <activeProfiles>
+    <activeProfile>test</activeProfile>
+  </activeProfiles>
+</settings>
